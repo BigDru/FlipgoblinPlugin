@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import com.google.gson.JsonArray;
+import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import java.util.Arrays;
 import org.junit.Test;
@@ -125,7 +126,7 @@ public class SyncClientTest
 	@Test
 	public void recoveredFillsAreNeverEnqueuedForCrowd()
 	{
-		SyncClient s = new SyncClient(null);
+		SyncClient s = new SyncClient(null, new Gson());
 		TradeRecord recovered = new TradeRecord(4151, TradeRecord.Side.BUY, 100, 1, 100, 2,
 			1720000000000L, true, 1719990000000L);
 		TradeRecord live = new TradeRecord(4151, TradeRecord.Side.BUY, 100, 1, 100, 2, 1720000000000L);

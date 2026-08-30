@@ -144,7 +144,8 @@ public final class PriceClient
 	}
 
 	private final OkHttpClient http;
-	private final Gson gson = new Gson();
+	// The client's Gson, injected by the plugin. The Plugin Hub forbids fresh Gson instances.
+	private final Gson gson;
 	private final Map<Integer, ItemPrices> cache = new ConcurrentHashMap<>();
 	private final Set<Integer> inflight = ConcurrentHashMap.newKeySet();
 	private final Map<String, Series> seriesCache = new ConcurrentHashMap<>();
@@ -200,9 +201,10 @@ public final class PriceClient
 		return p == null ? 0 : p.fetchedAt + TTL_MS;
 	}
 
-	public PriceClient(OkHttpClient http)
+	public PriceClient(OkHttpClient http, Gson gson)
 	{
 		this.http = http;
+		this.gson = gson;
 	}
 
 	/**

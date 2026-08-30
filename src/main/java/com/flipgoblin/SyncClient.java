@@ -37,7 +37,8 @@ public final class SyncClient
 	static final int MAX_BATCH = 500;
 
 	private final OkHttpClient http;
-	private final Gson gson = new Gson();
+	// The client's Gson, injected by the plugin. The Plugin Hub forbids fresh Gson instances.
+	private final Gson gson;
 	private final Deque<TradeRecord> pending = new ArrayDeque<>();
 	// The crowdsource stream keeps its own queue, so trade sync and price contribution
 	// never share a fate. Both flow under the one account link. Events age out client-side
@@ -47,9 +48,10 @@ public final class SyncClient
 	static final int CROWD_MAX_BATCH = 100;
 	static final long CROWD_MAX_AGE_MS = 60_000; // server slack is ±90s; stay comfortably inside
 
-	public SyncClient(OkHttpClient http)
+	public SyncClient(OkHttpClient http, Gson gson)
 	{
 		this.http = http;
+		this.gson = gson;
 	}
 
 	/** The account link's server-side verdict (the /plugin/me witness route). */

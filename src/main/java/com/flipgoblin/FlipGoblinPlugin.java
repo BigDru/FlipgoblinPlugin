@@ -45,7 +45,7 @@ public class FlipGoblinPlugin extends Plugin
 {
 	// Build/version tag, visible in logs and the settings panel so support reports identify the
 	// running build. Dev jars carry b##; the publish pipeline stamps the dated release version.
-	static final String BUILD = "2026.08.30";
+	static final String BUILD = "2026.08.30.1";
 
 	/** The Flip Goblin API base URL, baked in. One constant, one server. */
 	static final String API_BASE = "https://flipgoblin-api.druex.workers.dev";
@@ -204,7 +204,7 @@ public class FlipGoblinPlugin extends Plugin
 		differ = new GeOfferDiffer();
 		records = new ArrayList<>();
 		positions = new GePositions();
-		prices = new PriceClient(okHttpClient);
+		prices = new PriceClient(okHttpClient, gson);
 		targets = new TargetsClient(okHttpClient);
 		overlayManager.add(overlay);
 		overlayManager.add(geInfoOverlay);
@@ -217,7 +217,7 @@ public class FlipGoblinPlugin extends Plugin
 			.panel(panel)
 			.build();
 		clientToolbar.addNavigation(navButton);
-		sync = new SyncClient(okHttpClient);
+		sync = new SyncClient(okHttpClient, gson);
 		assetsPusher = new AssetsPusher(executor, this::sendAssets);
 		historyImporter = new GeHistoryImporter(client, itemManager);
 		// Custody: plugin enabled while ALREADY at the login screen sees no LOGIN_SCREEN
