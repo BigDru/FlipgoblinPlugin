@@ -419,8 +419,8 @@ public final class FlipGoblinPanel extends PluginPanel
 		name.setFont(FontManager.getRunescapeSmallFont());
 		name.setForeground(lockedRow ? LOSS : r.current ? PROFIT : Color.WHITE);
 		name.setToolTipText(lockedRow
-			? "Past the free one-character limit — syncing and market data are paused for this "
-				+ "character until you go Premium or unlink others on the website"
+			? "Another linked character holds the active slot — syncing and market data are "
+				+ "paused for this character until you unlink the other on the website"
 			: r.current
 				? "Logged in now — this character's token drives the syncs"
 				: "Linked; its token activates automatically when this character logs in");

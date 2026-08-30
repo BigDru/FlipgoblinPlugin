@@ -45,7 +45,7 @@ public class FlipGoblinPlugin extends Plugin
 {
 	// Build/version tag, visible in logs and the settings panel so support reports identify the
 	// running build. Dev jars carry b##; the publish pipeline stamps the dated release version.
-	static final String BUILD = "2026.08.30.1";
+	static final String BUILD = "2026.08.30.2";
 
 	/** The Flip Goblin API base URL, baked in. One constant, one server. */
 	static final String API_BASE = "https://flipgoblin-api.druex.workers.dev";
@@ -256,11 +256,26 @@ public class FlipGoblinPlugin extends Plugin
 			targetsRefresher = null;
 		}
 		targets = null;
-		flushIfEnabled(); // best-effort final drain (idempotent server-side)
-		AssetsPusher ap = assetsPusher;
-		if (ap != null)
+		// Best-effort final drains, submitted to the executor: blocking network on this
+		// thread would stall whatever thread the plugin system shuts us down on. The sync
+		// task captures its client and token, so nulling the fields below cannot race it.
+		// The assets drain may see the closed state and skip; the next login re-pushes the
+		// complete snapshot anyway (latest wins server-side).
+		SyncClient closingSync = sync;
+		AssetsPusher closingPusher = assetsPusher;
+		String closingToken = config.apiToken().trim();
+		String closingCharacter = rsn;
+		if (closingSync != null && !closingToken.isEmpty() && !characterLocked)
 		{
-			ap.flushNow(); // ditto for a snapshot still inside its debounce/throttle window
+			executor.submit(() ->
+			{
+				closingSync.flush(API_BASE, closingToken, closingCharacter);
+				closingSync.flushCrowd(API_BASE, closingToken);
+			});
+		}
+		if (closingPusher != null)
+		{
+			executor.submit(closingPusher::flushNow);
 		}
 		assetsPusher = null;
 		sync = null;

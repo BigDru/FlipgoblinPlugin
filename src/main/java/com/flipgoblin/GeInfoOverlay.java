@@ -183,9 +183,9 @@ public class GeInfoOverlay extends Overlay
 			panel.getChildren().add(LineComponent.builder()
 				.left("Character locked").leftColor(Color.RED).build());
 			panel.getChildren().add(LineComponent.builder()
-				.left("past the free 1-character limit —").leftColor(MUTED).build());
+				.left("another linked character holds the slot —").leftColor(MUTED).build());
 			panel.getChildren().add(LineComponent.builder()
-				.left("unlink others or go Premium:").leftColor(MUTED).build());
+				.left("unlink it at:").leftColor(MUTED).build());
 			panel.getChildren().add(LineComponent.builder()
 				.left("flipgoblin.com/settings").leftColor(MUTED).build());
 		}
