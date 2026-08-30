@@ -1,0 +1,61 @@
+plugins { id 'java' }
+
+repositories {
+	mavenLocal()
+	maven {
+		url = 'https://repo.runelite.net'
+		content { includeGroupByRegex("net\\.runelite.*") }
+	}
+	mavenCentral()
+}
+
+def runeLiteVersion = 'latest.release'
+def pluginMainClass = 'com.flipgoblin.FlipGoblinPluginTest'
+
+// The dev-launcher (FlipGoblinPluginTest, boots a real client) is NOT a junit test — it lives in its own
+// source set so `test`'s runtime stays native-free: the client's transitive LWJGL natives include an
+// unpublished linux-arm64 classifier that breaks testRuntimeClasspath RESOLUTION on some hosts, and the
+// junit differ tests only need the (native-free) runelite-api anyway. The launcher/shadowJar still carry
+// the full client and remain x64-host-only, as documented in the README.
+sourceSets {
+	devLauncher {
+		java { srcDirs = ['src/devLauncher/java'] }
+		compileClasspath += sourceSets.main.output
+		runtimeClasspath += sourceSets.main.output
+	}
+}
+
+dependencies {
+	compileOnly group: 'net.runelite', name:'client', version: runeLiteVersion
+	compileOnly 'org.projectlombok:lombok:1.18.30'
+	annotationProcessor 'org.projectlombok:lombok:1.18.30'
+	testImplementation 'junit:junit:4.12'
+	testImplementation group: 'net.runelite', name:'runelite-api', version: runeLiteVersion
+	// SyncClient's payload test: gson for the JSON assertions + okhttp so the class (whose static
+	// MediaType field initializes at load) verifies. Runtime uses the RuneLite client's own copies.
+	testImplementation 'com.google.code.gson:gson:2.10.1'
+	testImplementation 'com.squareup.okhttp3:okhttp:4.12.0'
+	devLauncherImplementation group: 'net.runelite', name:'client', version: runeLiteVersion
+	devLauncherImplementation group: 'net.runelite', name:'jshell', version: runeLiteVersion
+}
+
+group = 'com.flipgoblin'
+
+java { toolchain { languageVersion = JavaLanguageVersion.of(11) } }
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+	options.release.set(11)
+}
+
+tasks.register('shadowJar', Jar) {
+	dependsOn configurations.devLauncherRuntimeClasspath
+	manifest { attributes('Main-Class': pluginMainClass, 'Multi-Release': true) }
+	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+	from sourceSets.main.output
+	from sourceSets.devLauncher.output
+	from { configurations.devLauncherRuntimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
+	exclude 'META-INF/INDEX.LIST', 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', '**/module-info.class'
+	archiveClassifier.set('shadow')
+	archiveFileName.set("${rootProject.name}-${project.version}-all.jar")
+}
