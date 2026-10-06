@@ -10,7 +10,7 @@ import org.junit.Test;
 
 /**
  * Pins the history-import reconciliation (live b43 finding, 2026-07-11: a 1000-bar buy captured as
- * partial fills summing 747 double-imported whole from the History tab — overlay read "1747B").
+ * partial fills summing 747 double-imported whole from the History tab; overlay read "1747B").
  */
 public class GeHistoryReconcileTest
 {
@@ -49,7 +49,7 @@ public class GeHistoryReconcileTest
 	@Test
 	public void partialCoverage_importsOnlyTheGap()
 	{
-		// History entry: "Bought 1000 for 951,000" — fills cover 747 → import exactly the 253 gap.
+		// History entry: "Bought 1000 for 951,000"; fills cover 747 → import exactly the 253 gap.
 		TradeRecord r = GeHistoryReconcile.importFor(
 			mithrilFills(), 2359, TradeRecord.Side.BUY, 1000, 951_000L, 5000L);
 		assertEquals(253, r.quantity);
@@ -62,7 +62,7 @@ public class GeHistoryReconcileTest
 	@Test
 	public void fullCoverage_importsNothing()
 	{
-		// "Sold 1000 for 974,000" — the sell fills cover it all.
+		// "Sold 1000 for 974,000"; the sell fills cover it all.
 		assertNull(GeHistoryReconcile.importFor(
 			mithrilFills(), 2359, TradeRecord.Side.SELL, 1000, 974_000L, 5000L));
 	}
@@ -70,7 +70,7 @@ public class GeHistoryReconcileTest
 	@Test
 	public void noMatchingRun_importsWhole()
 	{
-		// A pre-plugin offer at a different price: no run agrees — import the whole entry.
+		// A pre-plugin offer at a different price: no run agrees, so import the whole entry.
 		TradeRecord r = GeHistoryReconcile.importFor(
 			mithrilFills(), 2359, TradeRecord.Side.BUY, 500, 430_000L, 5000L); // @860
 		assertEquals(500, r.quantity);
@@ -80,7 +80,7 @@ public class GeHistoryReconcileTest
 	@Test
 	public void newerRunAtAnotherPrice_doesNotMaskTheOlderOne()
 	{
-		// A second buy offer @944 starts filling on another slot AFTER the 951 offer completed —
+		// A second buy offer @944 starts filling on another slot AFTER the 951 offer completed;
 		// the 951 entry must still reconcile against ITS run, not the newest one.
 		List<TradeRecord> recs = mithrilFills();
 		recs.add(fill(2359, TradeRecord.Side.BUY, 944, 400, 2));
@@ -96,7 +96,7 @@ public class GeHistoryReconcileTest
 	{
 		// A fresh 951 offer starts filling (300 on slot 2) AFTER the old 951 offer's run (747).
 		// Re-parsing the old "Bought 1000" entry must reconcile against the LARGEST agreeing run
-		// (747), yielding the same 253 gap the shape-dedup already holds — never a 700 re-import.
+		// (747), yielding the same 253 gap the shape-dedup already holds, never a 700 re-import.
 		List<TradeRecord> recs = mithrilFills();
 		recs.add(fill(2359, TradeRecord.Side.BUY, 951, 300, 2));
 		TradeRecord r = GeHistoryReconcile.importFor(

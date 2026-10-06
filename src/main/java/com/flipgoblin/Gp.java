@@ -24,12 +24,17 @@ final class Gp
 		return n == null ? "—" : exact(n);
 	}
 
-	/** The short k/m form for aggregate totals: "1.4m", "23.5k", "950". */
+	/** The short k/m/b form for aggregate totals: "2.1b", "1.4m", "23.5k", "950". */
 	static String shortForm(long n)
 	{
 		long abs = Math.abs(n);
 		String s;
-		if (abs >= 1_000_000)
+		if (abs >= 999_950_000)
+		{
+			// Starts where "%.1fm" would round up to "1000.0m".
+			s = String.format(Locale.US, "%.1fb", abs / 1_000_000_000.0);
+		}
+		else if (abs >= 1_000_000)
 		{
 			s = String.format(Locale.US, "%.1fm", abs / 1_000_000.0);
 		}

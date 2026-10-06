@@ -46,6 +46,24 @@ public final class SyncClient
 	// rejects on login.
 	private final Deque<TradeRecord> crowdPending = new ArrayDeque<>();
 	static final int CROWD_MAX_BATCH = 100;
+	// Ignore/Undo events. Order matters (an Undo removes the newest ignore), so they send one
+	// at a time. Synchronized: the client thread enqueues while the executor flushes.
+	private final Deque<DismissalOp> dismissalOps = new ArrayDeque<>();
+	/** The op being sent now. An Undo can no longer cancel it. */
+	private DismissalOp dismissalInFlight;
+
+	/** A queued Ignore, or an Undo when {@code restore}. */
+	static final class DismissalOp
+	{
+		final Dismissal dismissal;
+		final boolean restore;
+
+		DismissalOp(Dismissal dismissal, boolean restore)
+		{
+			this.dismissal = dismissal;
+			this.restore = restore;
+		}
+	}
 	static final long CROWD_MAX_AGE_MS = 60_000; // server slack is ±90s; stay comfortably inside
 
 	public SyncClient(OkHttpClient http, Gson gson)
@@ -57,7 +75,7 @@ public final class SyncClient
 	/** The account link's server-side verdict (the /plugin/me witness route). */
 	public enum LinkCheck
 	{
-		/** Token valid and this character is active — full operation. */
+		/** Token valid and this character is active: full operation. */
 		OK,
 		/** Lapse lock: more linked characters than the account's tier allows. Refuse all operation. */
 		LOCKED,
@@ -113,6 +131,108 @@ public final class SyncClient
 	public int pendingCount()
 	{
 		return pending.size();
+	}
+
+	/** Queues an Ignore for the next flush. */
+	public synchronized void enqueueDismissal(Dismissal d)
+	{
+		dismissalOps.addLast(new DismissalOp(d, false));
+	}
+
+	/** Queues the Undo of {@code d}, or just drops that Ignore if it is still unsent. */
+	public synchronized void enqueueRestore(Dismissal d)
+	{
+		for (java.util.Iterator<DismissalOp> it = dismissalOps.descendingIterator(); it.hasNext(); )
+		{
+			DismissalOp op = it.next();
+			if (!op.restore && op.dismissal == d && op != dismissalInFlight)
+			{
+				it.remove();
+				return;
+			}
+		}
+		dismissalOps.addLast(new DismissalOp(d, true));
+	}
+
+	public synchronized int dismissalPendingCount()
+	{
+		return dismissalOps.size();
+	}
+
+	/** Wire body: Ignore = {itemId, ts}, Undo = {itemId}. */
+	static JsonObject dismissalBody(DismissalOp op)
+	{
+		JsonObject o = new JsonObject();
+		o.addProperty("itemId", op.dismissal.itemId);
+		if (!op.restore)
+		{
+			o.addProperty("ts", op.dismissal.timestamp);
+		}
+		return o;
+	}
+
+	/**
+	 * Sends queued Ignore/Undo events in order. Blocking; call from the executor. A 4xx is
+	 * dropped so it never wedges the queue; other failures stop and retry next time.
+	 */
+	public boolean flushDismissals(String apiBase, String token, String character)
+	{
+		while (true)
+		{
+			DismissalOp op;
+			synchronized (this)
+			{
+				op = dismissalOps.peekFirst();
+				dismissalInFlight = op;
+			}
+			if (op == null)
+			{
+				return true;
+			}
+			Request.Builder rb = new Request.Builder()
+				.url(apiBase.replaceAll("/+$", "") + (op.restore ? "/plugin/flips/restore" : "/plugin/flips/dismiss"))
+				.header("Authorization", "Bearer " + token)
+				.post(RequestBody.create(JSON, gson.toJson(dismissalBody(op))));
+			if (character != null && !character.isEmpty())
+			{
+				rb.header("X-FlipGoblin-Character", character);
+			}
+			boolean done;
+			try (Response res = http.newCall(rb.build()).execute())
+			{
+				if (res.isSuccessful())
+				{
+					done = true;
+				}
+				else if (res.code() >= 400 && res.code() < 500 && res.code() != 401 && res.code() != 429)
+				{
+					log.warn("{} rejected with HTTP {}, dropping it", op.restore ? "undo-ignore" : "ignore", res.code());
+					done = true;
+				}
+				else
+				{
+					log.debug("ignore sync failed with HTTP {}, will retry", res.code());
+					done = false;
+				}
+			}
+			catch (IOException e)
+			{
+				log.debug("ignore sync unreachable, will retry: {}", e.toString());
+				done = false;
+			}
+			synchronized (this)
+			{
+				dismissalInFlight = null;
+				if (done && dismissalOps.peekFirst() == op)
+				{
+					dismissalOps.pollFirst();
+				}
+			}
+			if (!done)
+			{
+				return false;
+			}
+		}
 	}
 
 	/** Queues a live fill for the crowd stream. Recovered fills never qualify; their times are stale. */
@@ -325,7 +445,7 @@ public final class SyncClient
 			}
 			if (res.code() >= 400 && res.code() < 500 && res.code() != 401 && res.code() != 429)
 			{
-				log.warn("crowd submit rejected with HTTP {} — dropping {} events", res.code(), n);
+				log.warn("crowd submit rejected with HTTP {}, dropping {} events", res.code(), n);
 				for (int i = 0; i < n; i++)
 				{
 					crowdPending.pollFirst();
@@ -335,7 +455,7 @@ public final class SyncClient
 		}
 		catch (IOException e)
 		{
-			log.debug("crowd submit unreachable — will retry: {}", e.toString());
+			log.debug("crowd submit unreachable, will retry: {}", e.toString());
 			return false;
 		}
 	}
@@ -381,19 +501,19 @@ public final class SyncClient
 			if (res.code() >= 400 && res.code() < 500 && res.code() != 401 && res.code() != 429)
 			{
 				// The batch itself is malformed (a bug). Drop it rather than wedge the queue forever.
-				log.warn("sync rejected with HTTP {} — dropping {} records", res.code(), n);
+				log.warn("sync rejected with HTTP {}, dropping {} records", res.code(), n);
 				for (int i = 0; i < n; i++)
 				{
 					pending.pollFirst();
 				}
 				return false;
 			}
-			log.debug("sync failed with HTTP {} — will retry ({} pending)", res.code(), pending.size());
+			log.debug("sync failed with HTTP {}, will retry ({} pending)", res.code(), pending.size());
 			return false;
 		}
 		catch (IOException e)
 		{
-			log.debug("sync unreachable — will retry ({} pending): {}", pending.size(), e.toString());
+			log.debug("sync unreachable, will retry ({} pending): {}", pending.size(), e.toString());
 			return false;
 		}
 	}

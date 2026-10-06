@@ -37,7 +37,7 @@ public class CollectLedgerTest
 	@Test
 	public void sellFills_accumulateCoins_NET_ofTax_neverGross()
 	{
-		// The verified id=4 case shape: 1,800 @ 1,189 — tax 23/unit, net 1,166/unit. Gross would
+		// The verified id=4 case shape: 1,800 @ 1,189: tax 23/unit, net 1,166/unit. Gross would
 		// be 2,140,200; the ledger must hold 2,098,800.
 		CollectLedger l = new CollectLedger();
 		l.onOffer(SLOT, snap(4151, GrandExchangeOfferState.SELLING, 1800, 0, 0, 1189), 1L);
@@ -62,7 +62,7 @@ public class CollectLedgerTest
 		l2.onOffer(SLOT, snap(379, GrandExchangeOfferState.SELLING, 100, 0, 0, 200), 1L);
 		l2.onOffer(SLOT, snap(379, GrandExchangeOfferState.SELLING, 100, 40, 8000, 200), 2L);
 		l2.onOffer(SLOT, snap(379, GrandExchangeOfferState.CANCELLED_SELL, 100, 40, 8000, 200), 3L);
-		assertEquals(40L * 200, l2.coins()); // exempt — no tax
+		assertEquals(40L * 200, l2.coins()); // exempt, no tax
 		assertArrayEquals(new int[][]{{379, 60}}, l2.itemPairs());
 	}
 
@@ -70,7 +70,7 @@ public class CollectLedgerTest
 	public void firstSighting_countsNothing_slotReuseWithoutEmpty_assumesCollected()
 	{
 		CollectLedger l = new CollectLedger();
-		// Login replay of a completed offer: baseline only — offline progress arrives via
+		// Login replay of a completed offer: baseline only; offline progress arrives via
 		// applyFill under acquittal, never through the raw replay (never-inflate).
 		assertFalse(l.onOffer(SLOT, snap(563, GrandExchangeOfferState.BOUGHT, 6000, 6000, 744_000, 124), 1L));
 		assertEquals(0, l.itemPairs().length);
@@ -96,7 +96,7 @@ public class CollectLedgerTest
 		assertTrue(l.resyncAll(java.util.Arrays.asList(new long[]{100, 3, 0})));
 		assertArrayEquals(new int[][]{{100, 3}}, l.itemPairs());
 		// Box shows pre-ledger stock we never witnessed filling: resync heals UP (the b72 ruby
-		// bootstrap case — authoritative-while-visible).
+		// bootstrap case, authoritative-while-visible).
 		assertTrue(l.resyncAll(java.util.Arrays.asList(new long[]{100, 3, 0}, new long[]{1603, 4078, 250})));
 		assertEquals(250, l.coins());
 		boolean rubies = false;
@@ -121,17 +121,17 @@ public class CollectLedgerTest
 		l.onOffer(SLOT, snap(100, GrandExchangeOfferState.BUYING, 10, 10, 500, 50), 2L);
 		Map<Integer, CollectLedger.Entry> saved = l.snapshotEntries();
 		assertTrue(l.zeroAll());
-		assertFalse(l.zeroAll()); // already empty — no churn
+		assertFalse(l.zeroAll()); // already empty, no churn
 		assertEquals(0, l.itemPairs().length);
 		// The acquitted-login path: persisted entries seed a fresh ledger and count again.
 		CollectLedger next = new CollectLedger();
 		next.seedEntries(saved);
 		assertArrayEquals(new int[][]{{100, 10}}, next.itemPairs());
-		// MERGE semantics: a slot the live session already touched keeps its live entry — the
+		// MERGE semantics: a slot the live session already touched keeps its live entry; the
 		// seed must never eat a pre-judge witnessed mutation.
 		CollectLedger merged = new CollectLedger();
 		merged.applyFill(new TradeRecord(200, TradeRecord.Side.BUY, 10, 5, 50, SLOT, 1L, true, 1L));
-		merged.seedEntries(saved); // saved holds SLOT too (item 100) — live entry wins
+		merged.seedEntries(saved); // saved holds SLOT too (item 100); live entry wins
 		assertArrayEquals(new int[][]{{200, 5}}, merged.itemPairs());
 		// A seeded entry whose slot replays a DIFFERENT item = missed EMPTY → dropped low.
 		assertTrue(next.onOffer(SLOT, snap(200, GrandExchangeOfferState.BUYING, 5, 0, 0, 10), 3L)
@@ -180,7 +180,7 @@ public class CollectLedgerTest
 		// Collect delivered 5,000 runes (partial fit) + all the coins.
 		Map<Integer, Integer> arrived = new HashMap<>();
 		arrived.put(563, 5000);
-		assertTrue(l.applyCollectDelta(arrived, 20_000)); // lobster (379) is exempt — net = gross
+		assertTrue(l.applyCollectDelta(arrived, 20_000)); // lobster (379) is exempt: net = gross
 		// Slot order: slot 1 fully consumed (4000), slot 5 keeps the 1,000 remainder.
 		assertArrayEquals(new int[][]{{563, 1000}}, l.itemPairs());
 		assertEquals(0, l.coins());
@@ -209,7 +209,7 @@ public class CollectLedgerTest
 		l.resyncAll(java.util.Arrays.asList(new long[]{1603, 4078, 0}));
 		// …then the offer-detail view witnesses the SAME offer under its real slot key 1.
 		assertTrue(l.resyncViewed(1, 1603, 4078, 0));
-		// One entry, never two — a glance can never double-count.
+		// One entry, never two: a glance can never double-count.
 		assertArrayEquals(new int[][]{{1603, 4078}}, l.itemPairs());
 		// Re-witnessing the identical state is a no-op (no persist churn per tick).
 		assertFalse(l.resyncViewed(1, 1603, 4078, 0));

@@ -47,7 +47,7 @@ public class TargetsClientTest
 	@Test
 	public void alertLabelUsesTheSiteVocabulary()
 	{
-		// Thresholds are exact prices the user typed — never abbreviated back (ruling 2026-08-28).
+		// Thresholds are exact prices the user typed, never abbreviated back (ruling 2026-08-28).
 		assertEquals("Buy ≤ 1,000,000",
 			TargetsClient.alertLabel(new TargetsClient.TargetAlert("bid", "lte", 1_000_000, true)));
 		assertEquals("Sell ≥ 250",

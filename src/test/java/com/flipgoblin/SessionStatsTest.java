@@ -7,7 +7,7 @@ import java.util.Collections;
 import org.junit.Test;
 
 /**
- * Pins the Java P/L math to the SAME fixture values as packages/shared/src/flips.test.ts — the
+ * Pins the Java P/L math to the SAME fixture values as packages/shared/src/flips.test.ts, the
  * cross-implementation consistency guard (client panel vs website must agree).
  */
 public class SessionStatsTest
@@ -17,7 +17,7 @@ public class SessionStatsTest
 		return new TradeRecord(item, side, price, qty, price * qty, 0, ts);
 	}
 
-	/** A known-taxable id for the generic cases (Abyssal whip — mirrors tax.test.ts WHIP). */
+	/** A known-taxable id for the generic cases (Abyssal whip; mirrors tax.test.ts WHIP). */
 	private static final int WHIP = 4151;
 
 	@Test
@@ -27,15 +27,17 @@ public class SessionStatsTest
 		assertEquals(2, SessionStats.geSellTax(149, WHIP)); // floor(2.98)
 		assertEquals(0, SessionStats.geSellTax(49, WHIP)); // floor(0.98)
 		assertEquals(5_000_000, SessionStats.geSellTax(300_000_000, WHIP)); // cap
+		assertEquals(5_000_000, SessionStats.geSellTax(5_000_000_000L, WHIP)); // cap holds above max cash
+		assertEquals(4_995_000_000L, SessionStats.netFromSale(5_000_000_000L, WHIP));
 		assertEquals(0, SessionStats.geSellTax(0, WHIP));
 	}
 
 	@Test
 	public void exemptItems_zeroTax() // mirrors tax.test.ts "exempt items pay ZERO tax" (FND-5)
 	{
-		assertEquals(0, SessionStats.geSellTax(10_000_000, 13190)); // Old school bond — 200k if taxable
+		assertEquals(0, SessionStats.geSellTax(10_000_000, 13190)); // Old school bond, 200k if taxable
 		assertEquals(10_000_000, SessionStats.netFromSale(10_000_000, 13190));
-		assertEquals(0, SessionStats.geSellTax(250, 379)); // Lobster — 5 if taxable
+		assertEquals(0, SessionStats.geSellTax(250, 379)); // Lobster, 5 if taxable
 	}
 
 	@Test
@@ -108,5 +110,93 @@ public class SessionStatsTest
 			rec(1, TradeRecord.Side.BUY, 100, 3, 1),
 			rec(1, TradeRecord.Side.SELL, 90, 3, 2)));
 		assertEquals(-33, r.totalRealized);
+	}
+
+	// --- Ignore ("not a flip"), same cases as the website's tests ---
+
+	private static SessionStats.ItemPosition only(SessionStats.Result r)
+	{
+		assertEquals(1, r.items.size());
+		return r.items.get(0);
+	}
+
+	@Test
+	public void dismissal_writesOffOpenLots_realizedUntouched()
+	{
+		SessionStats.Result r = SessionStats.match(
+			Arrays.asList(rec(WHIP, TradeRecord.Side.BUY, 100, 10, 1)),
+			Arrays.asList(new Dismissal(WHIP, 2)));
+		assertEquals(0, r.totalRealized);
+		SessionStats.ItemPosition p = only(r);
+		assertEquals(0, p.openQty);
+		assertEquals(0, p.openCost);
+		assertEquals(10, p.ignoredQty);
+	}
+
+	@Test
+	public void dismissal_midEpisode_soldPartStaysRealized()
+	{
+		// Buy 10@100, sell 4@150 (net 147 → +47/unit), ignore the open 6.
+		SessionStats.Result r = SessionStats.match(
+			Arrays.asList(rec(WHIP, TradeRecord.Side.BUY, 100, 10, 1), rec(WHIP, TradeRecord.Side.SELL, 150, 4, 2)),
+			Arrays.asList(new Dismissal(WHIP, 3)));
+		assertEquals(4 * 47, r.totalRealized);
+		SessionStats.ItemPosition p = only(r);
+		assertEquals(0, p.openQty);
+		assertEquals(6, p.ignoredQty);
+	}
+
+	@Test
+	public void dismissal_laterSellsUntracked_rebuyOpensFresh()
+	{
+		SessionStats.Result r = SessionStats.match(
+			Arrays.asList(
+				rec(WHIP, TradeRecord.Side.BUY, 100, 10, 1),
+				rec(WHIP, TradeRecord.Side.SELL, 150, 3, 5), // after the ignore, no cost basis
+				rec(WHIP, TradeRecord.Side.BUY, 120, 5, 6), // fresh position
+				rec(WHIP, TradeRecord.Side.SELL, 200, 5, 7)), // net 196 → +76/unit
+			Arrays.asList(new Dismissal(WHIP, 2)));
+		SessionStats.ItemPosition p = only(r);
+		assertEquals(3, p.unmatchedSellQty);
+		assertEquals(5 * 76, r.totalRealized);
+		assertEquals(10, p.ignoredQty);
+		assertEquals(0, p.openQty);
+	}
+
+	@Test
+	public void dismissal_staleIsNoop_sameTsFillWrittenOff()
+	{
+		SessionStats.Result stale = SessionStats.match(
+			Arrays.asList(rec(WHIP, TradeRecord.Side.BUY, 100, 5, 1), rec(WHIP, TradeRecord.Side.SELL, 150, 5, 2)),
+			Arrays.asList(new Dismissal(WHIP, 3)));
+		assertEquals(0, only(stale).ignoredQty);
+		assertEquals(5 * 47, stale.totalRealized);
+		SessionStats.Result tied = SessionStats.match(
+			Arrays.asList(rec(WHIP, TradeRecord.Side.BUY, 100, 5, 3)),
+			Arrays.asList(new Dismissal(WHIP, 3)));
+		assertEquals(0, only(tied).openQty); // the fill sorts before the ignore on a tie
+		assertEquals(5, only(tied).ignoredQty);
+		// Another item's ignore touches nothing here.
+		SessionStats.Result other = SessionStats.match(
+			Arrays.asList(rec(WHIP, TradeRecord.Side.BUY, 100, 5, 1)),
+			Arrays.asList(new Dismissal(379, 2)));
+		assertEquals(5, only(other).openQty);
+	}
+
+	@Test
+	public void sideTotals_countEveryFillPerSide()
+	{
+		SessionStats.ItemPosition p = only(SessionStats.match(Arrays.asList(
+			rec(WHIP, TradeRecord.Side.BUY, 100, 10, 1),
+			rec(WHIP, TradeRecord.Side.BUY, 110, 10, 2),
+			rec(WHIP, TradeRecord.Side.SELL, 150, 25, 3)))); // 5 of these have no cost basis
+		assertEquals(20, p.boughtQty);
+		assertEquals(2_100, p.boughtValue);
+		assertEquals(100, p.boughtMinPrice);
+		assertEquals(110, p.boughtMaxPrice);
+		assertEquals(25, p.soldQty);
+		assertEquals(3_750, p.soldValue);
+		assertEquals(150, p.soldMinPrice);
+		assertEquals(150, p.soldMaxPrice);
 	}
 }

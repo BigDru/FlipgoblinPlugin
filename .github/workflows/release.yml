@@ -18,8 +18,8 @@ jobs:
           distribution: temurin
           java-version: 11
 
-      # Tests gate the release; `jar` is the plugin-classes jar — the shadowJar dev client is
-      # never released.
+      # Tests gate the release; `jar` is the plugin-classes jar (the shadowJar dev client is
+      # never released).
       - run: ./gradlew --no-daemon --console=plain test jar
 
       - uses: softprops/action-gh-release@v2

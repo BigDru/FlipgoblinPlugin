@@ -15,7 +15,7 @@ import net.runelite.client.ui.overlay.components.TitleComponent;
  * RuneLite's stock overlay components (translucent dark panel, movable with Alt-drag, position
  * remembered by the overlay system).
  *
- * ALWAYS visible — no config toggle — so a fresh session is verifiable at a glance; the
+ * ALWAYS visible (no config toggle), so a fresh session is verifiable at a glance; the
  * positions rows appear only when they exist. Reads plugin state on the client thread.
  */
 public class FlipGoblinOverlay extends OverlayPanel
@@ -44,7 +44,7 @@ public class FlipGoblinOverlay extends OverlayPanel
 		panelComponent.getChildren().add(TitleComponent.builder()
 			.text("Flip Goblin " + FlipGoblinPlugin.BUILD).color(GOLD).build());
 		// Custody banner: overlays can't draw pre-LOGGED_IN, so the welcome-screen verdict
-		// also shows HERE for the first minute in-world — the guaranteed-visible surface.
+		// also shows HERE for the first minute in-world (the guaranteed-visible surface).
 		if (plugin.custodyBannerActive())
 		{
 			LoginCustody.Verdict v = plugin.custodyOverlayVerdict();

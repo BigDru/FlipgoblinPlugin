@@ -103,6 +103,17 @@ public final class SessionStats
 		public int openQty;
 		public long openCost;
 		public int unmatchedSellQty;
+		/** Per-side totals over every fill, matched or not. */
+		public long boughtQty;
+		public long boughtValue;
+		public long boughtMinPrice = Long.MAX_VALUE;
+		public long boughtMaxPrice;
+		public long soldQty;
+		public long soldValue;
+		public long soldMinPrice = Long.MAX_VALUE;
+		public long soldMaxPrice;
+		/** Units written off by Ignore. Later sells never match them. */
+		public long ignoredQty;
 
 		ItemPosition(int itemId)
 		{
@@ -125,19 +136,41 @@ public final class SessionStats
 	/** FIFO-matches records, which arrive in chronological order. Pure. */
 	public static Result match(List<TradeRecord> records)
 	{
+		return match(records, java.util.Collections.emptyList());
+	}
+
+	/**
+	 * FIFO-matches records with Ignore events applied in time order. An Ignore writes off the
+	 * item's open lots, including a fill at the same instant. Both lists are chronological. Pure.
+	 */
+	public static Result match(List<TradeRecord> records, List<Dismissal> dismissals)
+	{
 		Map<Integer, Deque<BuyLot>> lots = new HashMap<>();
 		Map<Integer, ItemPosition> positions = new HashMap<>();
+		int nextDismissal = 0;
 
 		for (TradeRecord r : records)
 		{
+			while (nextDismissal < dismissals.size() && dismissals.get(nextDismissal).timestamp < r.timestamp)
+			{
+				writeOff(dismissals.get(nextDismissal++), lots, positions);
+			}
 			ItemPosition p = positions.computeIfAbsent(r.itemId, ItemPosition::new);
 			if (r.side == TradeRecord.Side.BUY)
 			{
+				p.boughtQty += r.quantity;
+				p.boughtValue += (long) r.quantity * r.price;
+				p.boughtMinPrice = Math.min(p.boughtMinPrice, r.price);
+				p.boughtMaxPrice = Math.max(p.boughtMaxPrice, r.price);
 				lots.computeIfAbsent(r.itemId, k -> new ArrayDeque<>()).addLast(new BuyLot(r.quantity, r.price));
 				p.openQty += r.quantity;
 				p.openCost += (long) r.quantity * r.price;
 				continue;
 			}
+			p.soldQty += r.quantity;
+			p.soldValue += (long) r.quantity * r.price;
+			p.soldMinPrice = Math.min(p.soldMinPrice, r.price);
+			p.soldMaxPrice = Math.max(p.soldMaxPrice, r.price);
 			int remaining = r.quantity;
 			long netPerUnit = netFromSale(r.price, r.itemId);
 			Deque<BuyLot> q = lots.getOrDefault(r.itemId, new ArrayDeque<>());
@@ -162,6 +195,11 @@ public final class SessionStats
 			}
 		}
 
+		while (nextDismissal < dismissals.size())
+		{
+			writeOff(dismissals.get(nextDismissal++), lots, positions);
+		}
+
 		long total = 0;
 		List<ItemPosition> out = new ArrayList<>(positions.values());
 		out.sort((a, b) -> Integer.compare(a.itemId, b.itemId));
@@ -170,6 +208,43 @@ public final class SessionStats
 			total += p.realized;
 		}
 		return new Result(total, out);
+	}
+
+	/** Removes the item's open lots from its position. No-op when nothing is open. */
+	private static void writeOff(Dismissal d, Map<Integer, Deque<BuyLot>> lots, Map<Integer, ItemPosition> positions)
+	{
+		Deque<BuyLot> q = lots.get(d.itemId);
+		ItemPosition p = positions.get(d.itemId);
+		if (q == null || q.isEmpty() || p == null)
+		{
+			return;
+		}
+		for (BuyLot lot : q)
+		{
+			p.openQty -= lot.qty;
+			p.openCost -= (long) lot.qty * lot.price;
+			p.ignoredQty += lot.qty;
+		}
+		q.clear();
+	}
+
+	/**
+	 * Whether the hide settings hide this card. A card with a flip or open units always shows;
+	 * otherwise every kind it has (untracked sales, ignored units) must have its setting on.
+	 */
+	static boolean hiddenCard(ItemPosition p, boolean hideUntracked, boolean hideIgnored)
+	{
+		if (p.openQty > 0 || p.matchedQty > 0)
+		{
+			return false;
+		}
+		boolean untracked = p.unmatchedSellQty > 0;
+		boolean ignored = p.ignoredQty > 0;
+		if (!untracked && !ignored)
+		{
+			return false;
+		}
+		return (!untracked || hideUntracked) && (!ignored || hideIgnored);
 	}
 
 	public static final class Result

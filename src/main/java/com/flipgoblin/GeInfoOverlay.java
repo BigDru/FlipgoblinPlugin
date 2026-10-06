@@ -45,12 +45,12 @@ public class GeInfoOverlay extends Overlay
 	private static final Color PROFIT = new Color(0x3f, 0xb9, 0x50);
 	private static final Color LOSS = new Color(0xf8, 0x51, 0x49);
 	private static final Color MUTED = Color.LIGHT_GRAY;
-	// Chart series colors — the website's exactly (apps/web/lib/candles.ts ASK_COLOR / BID_COLOR).
+	// Chart series colors: the website's exactly (apps/web/lib/candles.ts ASK_COLOR / BID_COLOR).
 	private static final Color ASK_LINE = new Color(0xe8, 0xb0, 0x4f);
 	private static final Color BID_LINE = new Color(0x38, 0xbd, 0xf8);
 	/** The purchase-price reference line while selling a tracked flip. */
 	private static final Color REF_LINE = new Color(0xf8, 0x51, 0x49, 190);
-	// Trade-dot colors — the site's DOT_MAX_ALPHA (0.6) exactly: softer than the lines they sit on.
+	// Trade-dot colors use the site's DOT_MAX_ALPHA (0.6) exactly: softer than the lines they sit on.
 	private static final Color ASK_DOT = new Color(0xe8, 0xb0, 0x4f, 153);
 	private static final Color BID_DOT = new Color(0x38, 0xbd, 0xf8, 153);
 	/** One background for the chart boxes and every panel, at the configured opacity. */
@@ -74,6 +74,8 @@ public class GeInfoOverlay extends Overlay
 	/** Chart box height. */
 	private static final int CHART_H = 176;
 	private static final int GAP = 6;
+	/** The price typed into a new offer. A 64-bit varp that RuneLite has not named yet. */
+	private static final int GE_SETUP_PRICE_VARP = 5753;
 
 	@Inject
 	GeInfoOverlay(Client client, FlipGoblinPlugin plugin, FlipGoblinConfig config)
@@ -102,7 +104,7 @@ public class GeInfoOverlay extends Overlay
 		if (b == null || b.width <= 0 || b.height <= 0)
 		{
 			trace("degenerate bounds " + b);
-			return null; // open/close transition frame — no real geometry to anchor to yet
+			return null; // open/close transition frame: no real geometry to anchor to yet
 		}
 		int varp = client.getVarpValue(VarPlayer.CURRENT_GE_ITEM);
 		GrandExchangeOffer viewed = viewedOffer(varp);
@@ -183,7 +185,7 @@ public class GeInfoOverlay extends Overlay
 			panel.getChildren().add(LineComponent.builder()
 				.left("Character locked").leftColor(Color.RED).build());
 			panel.getChildren().add(LineComponent.builder()
-				.left("another linked character holds the slot —").leftColor(MUTED).build());
+				.left("another linked character holds the slot.").leftColor(MUTED).build());
 			panel.getChildren().add(LineComponent.builder()
 				.left("unlink it at:").leftColor(MUTED).build());
 			panel.getChildren().add(LineComponent.builder()
@@ -245,7 +247,7 @@ public class GeInfoOverlay extends Overlay
 		{
 			panel.getChildren().add(LineComponent.builder()
 				.left("Flip")
-				.right("— (no tracked buy)")
+				.right("(no tracked buy)")
 				.rightColor(MUTED)
 				.build());
 			return;
@@ -261,7 +263,7 @@ public class GeInfoOverlay extends Overlay
 			.rightColor(GOLD)
 			.build());
 		long setPrice = viewedSell ? viewed.getPrice()
-			: client.getVarbitValue(VarbitID.GE_NEWOFFER_PRICE);
+			: client.getVarpLongValue(GE_SETUP_PRICE_VARP);
 		long qty = viewedSell ? viewed.getTotalQuantity() - viewed.getQuantitySold()
 			: Math.max(1, client.getVarbitValue(VarbitID.GE_NEWOFFER_QUANTITY));
 		if (setPrice > 0)
@@ -581,7 +583,7 @@ public class GeInfoOverlay extends Overlay
 
 	/**
 	 * The placed offer whose details screen is open, or null. Only consulted when no offer is being
-	 * composed (composing wins — its varp carries the item before any offer exists). GE_SELECTEDSLOT
+	 * composed (composing wins, since its varp carries the item before any offer exists). GE_SELECTEDSLOT
 	 * stays set while composing INTO an empty slot, so the EMPTY guard keeps pre-selection blank.
 	 */
 	private GrandExchangeOffer viewedOffer(int composingItemId)
@@ -644,7 +646,7 @@ public class GeInfoOverlay extends Overlay
 		}
 		if (!(max > min))
 		{
-			return; // flat/empty series — box only
+			return; // flat/empty series: box only
 		}
 
 		int n = s.ask.length;
@@ -938,7 +940,7 @@ public class GeInfoOverlay extends Overlay
 		return out;
 	}
 
-	// Volume bar colors — the website's ASK_VOL_COLOR / BID_VOL_COLOR exactly (0.5 alpha).
+	// Volume bar colors: the website's ASK_VOL_COLOR / BID_VOL_COLOR exactly (0.5 alpha).
 	private static final Color ASK_VOL = new Color(0xe8, 0xb0, 0x4f, 128);
 	private static final Color BID_VOL = new Color(0x38, 0xbd, 0xf8, 128);
 

@@ -44,14 +44,14 @@ final class GeHistoryImporter
 		Widget list = client.getWidget(InterfaceID.GeHistory.LIST);
 		if (list == null)
 		{
-			imported = false; // tab closed — the next open re-imports (deduped)
+			imported = false; // tab closed; the next open re-imports (deduped)
 			return null;
 		}
 		if (imported)
 		{
 			return null;
 		}
-		// Entries may hang off ANY child array depending on client build — walk all three (a
+		// Entries may hang off ANY child array depending on client build, so walk all three (a
 		// dynamic-only walk silently imports nothing on the live client).
 		List<Widget> kidList = new ArrayList<>();
 		for (Widget[] grp : new Widget[][]{
@@ -65,7 +65,7 @@ final class GeHistoryImporter
 		Widget[] kids = kidList.toArray(new Widget[0]);
 		if (kids.length == 0)
 		{
-			return null; // not populated yet — try again next frame
+			return null; // not populated yet; try again next frame
 		}
 		imported = true;
 		log.info("[{}] GE history open: {} children (dyn={}, static={}, nested={})",
@@ -81,7 +81,7 @@ final class GeHistoryImporter
 		// Live layout, 6 children per entry: "Bought:"/"Sold:" caption →
 		// "<name>x <qty>" text → the item ICON (id + qty) → the coins text, which for buys reads
 		// "49,000 coins= 7 each" and for sells "1,629,000 coins(1,662,000 - 33,000)= 1,629 each"
-		// (NET first, gross − tax in parens — the record wants GROSS so the flip matcher's own tax
+		// (NET first, gross − tax in parens; the record wants GROSS so the flip matcher's own tax
 		// math doesn't double-count).
 		Pattern sidePat = Pattern.compile("^(Bought|Sold):?$");
 		Pattern coinsPat = Pattern.compile("^([\\d,]+) coins(?:\\(([\\d,]+) - ([\\d,]+)\\))?.*");
@@ -112,12 +112,12 @@ final class GeHistoryImporter
 				long gross = Long.parseLong(
 					(m.group(2) != null ? m.group(2) : m.group(1)).replace(",", ""));
 				// Reconcile against slot-observed fill runs: import the whole entry, only its
-				// uncovered gap, or nothing — a naive shape-dedup double-counts an offer whose
+				// uncovered gap, or nothing. A naive shape-dedup double-counts an offer whose
 				// fills were captured piecemeal (see GeHistoryReconcile).
 				TradeRecord r = GeHistoryReconcile.importFor(existing, iconItem,
 					side.equalsIgnoreCase("Bought") ? TradeRecord.Side.BUY : TradeRecord.Side.SELL,
 					iconQty, gross, now);
-				// Dedup by shape — NOTE two identical real trades (same item/side/qty/price)
+				// Dedup by shape. NOTE two identical real trades (same item/side/qty/price)
 				// collapse to one; the tab carries no ids, so this is the honest floor.
 				if (r != null && !hasEquivalent(existing, r) && !hasEquivalent(importedRecs, r))
 				{
@@ -130,7 +130,7 @@ final class GeHistoryImporter
 		}
 		if (importedRecs.isEmpty() && entries == 0)
 		{
-			// Nothing parsed from a populated list — dump a compact shape sample for diagnosis.
+			// Nothing parsed from a populated list: dump a compact shape sample for diagnosis.
 			StringBuilder sb = new StringBuilder();
 			for (int i = 0; i < kids.length && i < 36; i++)
 			{

@@ -66,7 +66,7 @@ public class GeLimitsTest
 
 		List<TradeRecord> recs2 = Arrays.asList(
 			buy(4151, 10, 1 * H),
-			buy(4151, 7, 6 * H)); // past the first window — new anchor, count restarts
+			buy(4151, 7, 6 * H)); // past the first window: new anchor, count restarts
 		assertUsage(7, 10 * H, false, false, GeLimits.usage(recs2, 4151, 7 * H, 0, 0));
 	}
 
@@ -75,7 +75,7 @@ public class GeLimitsTest
 	{
 		List<TradeRecord> recs = Arrays.asList(
 			buy(4151, 10, 1 * H),
-			buy(4151, 5, 5 * H)); // ts == anchor + 4h — outside the old window
+			buy(4151, 5, 5 * H)); // ts == anchor + 4h, outside the old window
 		assertUsage(5, 9 * H, false, false, GeLimits.usage(recs, 4151, 6 * H, 0, 0));
 	}
 
@@ -147,7 +147,7 @@ public class GeLimitsTest
 	public void liveBuysSurviveWhenOfflineBuysAge_out()
 	{
 		List<TradeRecord> recs = Arrays.asList(
-			recovered(2357, 10_000, 6 * H, 1),  // earliest window [0,4h) — expired by 7h
+			recovered(2357, 10_000, 6 * H, 1),  // earliest window [0,4h), expired by 7h
 			buy(2357, 500, 6 * H + 1800_000));  // live at 6.5h opens a fresh window
 		assertUsage(500, 10 * H, false, true, GeLimits.usage(recs, 2357, 7 * H, 0, 10_000));
 	}
@@ -158,7 +158,7 @@ public class GeLimitsTest
 	public void infeasibleEarlyPlacement_fallsBackToLiveOnly()
 	{
 		List<TradeRecord> recs = Arrays.asList(
-			recovered(2357, 10_000, 6 * H + 1800_000, 6 * H), // [6h, 6.5h] — fills the window
+			recovered(2357, 10_000, 6 * H + 1800_000, 6 * H), // [6h, 6.5h]: fills the window
 			buy(2357, 500, 7 * H)); // live inside that same window
 		assertUsage(500, 10 * H + 1800_000, false, true,
 			GeLimits.usage(recs, 2357, 7 * H, 0, 10_000));

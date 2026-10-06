@@ -98,23 +98,22 @@ public final class AssetSnapshot
 		return entries.size();
 	}
 
-	/** The number of coins in the snapshot, or 0 if none are visible. */
+	/** The cash in the snapshot in gp: coins plus platinum tokens at 1,000 each. 0 if none are visible. */
 	public long coins()
 	{
+		long gp = 0;
 		for (Entry e : entries)
 		{
-			if (e.itemId == ItemIds.COINS)
-			{
-				return e.qty;
-			}
+			gp += ItemIds.cashValue(e.itemId) * e.qty;
 		}
-		return 0;
+		return gp;
 	}
 
 	/**
-	 * Estimates the snapshot's total value in gp. Coins count at face value. Every other
-	 * stack is valued at its live bid price minus GE tax. Stacks with no known bid price
-	 * are left out of the total and counted instead. Returns {total gp, unpriced count}.
+	 * Estimates the snapshot's total value in gp. Coins and platinum tokens count at face
+	 * value. Every other stack is valued at its live bid price minus GE tax. Stacks with no
+	 * known bid price are left out of the total and counted instead. Returns {total gp,
+	 * unpriced count}.
 	 */
 	public long[] estimateValue(Map<Integer, Long> bids)
 	{
@@ -122,9 +121,10 @@ public final class AssetSnapshot
 		long unpriced = 0;
 		for (Entry e : entries)
 		{
-			if (e.itemId == ItemIds.COINS)
+			long cash = ItemIds.cashValue(e.itemId);
+			if (cash > 0)
 			{
-				total += e.qty;
+				total += cash * e.qty;
 				continue;
 			}
 			Long bid = bids == null ? null : bids.get(e.itemId);

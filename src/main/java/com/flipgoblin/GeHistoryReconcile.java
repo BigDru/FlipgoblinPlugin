@@ -75,7 +75,7 @@ final class GeHistoryReconcile
 		}
 		if (run[0] >= qty)
 		{
-			return null; // the run holds everything the entry claims — nothing to import
+			return null; // the run holds everything the entry claims; nothing to import
 		}
 		int gapQty = qty - (int) run[0];
 		long gapSpent = Math.max(0, gross - run[1]);

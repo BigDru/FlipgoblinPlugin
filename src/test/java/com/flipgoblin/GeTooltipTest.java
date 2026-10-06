@@ -7,7 +7,7 @@ import static org.junit.Assert.assertTrue;
 import com.google.gson.Gson;
 import org.junit.Test;
 
-/** Pins the GE hover tooltip markup (RS col tags + </br> — no client classes, so it stays pure). */
+/** Pins the GE hover tooltip markup (RS col tags + </br>; no client classes, so it stays pure). */
 public class GeTooltipTest
 {
 	private static PriceClient.ItemPrices prices(String json)
@@ -55,7 +55,7 @@ public class GeTooltipTest
 
 		String open = GeTooltip.build(prices(json), new GeLimits.Usage(250, 0, false, false), "15:42");
 		assertTrue(open.contains("Bought ≥250/11000 · left ≤10750 · limit resets 15:42"));
-		assertFalse(open.contains("<col=f85149>Bought")); // under the cap — muted, not red
+		assertFalse(open.contains("<col=f85149>Bought")); // under the cap: muted, not red
 
 		String capped = GeTooltip.build(prices(json), new GeLimits.Usage(11000, 0, false, false), "15:42");
 		assertTrue(capped.contains("<col=f85149>Bought ≥11000/11000 · left ≤0"));

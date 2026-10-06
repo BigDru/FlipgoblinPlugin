@@ -12,7 +12,7 @@ repositories {
 def runeLiteVersion = 'latest.release'
 def pluginMainClass = 'com.flipgoblin.FlipGoblinPluginTest'
 
-// The dev-launcher (FlipGoblinPluginTest, boots a real client) is NOT a junit test — it lives in its own
+// The dev-launcher (FlipGoblinPluginTest, boots a real client) is NOT a junit test. It lives in its own
 // source set so `test`'s runtime stays native-free: the client's transitive LWJGL natives include an
 // unpublished linux-arm64 classifier that breaks testRuntimeClasspath RESOLUTION on some hosts, and the
 // junit differ tests only need the (native-free) runelite-api anyway. The launcher/shadowJar still carry

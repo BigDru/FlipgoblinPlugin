@@ -113,7 +113,7 @@ public final class PriceClient
 	}
 
 	static final long TTL_MS = 60_000; // matches the endpoint's edge-cache window
-	static final long SERIES_TTL_MS = 300_000; // coarse buckets — refetching faster is waste
+	static final long SERIES_TTL_MS = 300_000; // coarse buckets; refetching faster is waste
 	/** Tick-graph refresh span in minutes. The overlap covers the Wiki's publication lag. */
 	static final int TICK_TAIL_SPAN = 3;
 	/** Candle tail refreshes resample onto this many grid slots, enough overlap for the merge. */
@@ -865,7 +865,7 @@ public final class PriceClient
 		}
 		catch (RuntimeException e)
 		{
-			return null; // not even JSON-object-shaped — same contract as a missing "item"
+			return null; // not even JSON-object-shaped; same contract as a missing "item"
 		}
 		if (root == null || !root.has("item") || !root.get("item").isJsonObject())
 		{

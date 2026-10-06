@@ -30,7 +30,7 @@ public class LoginCustodyTest
 	@Test
 	public void parsesWordForm()
 	{
-		// Captured verbatim 2026-07-16: "…a minute ago." — the parser must handle a/an.
+		// Captured verbatim 2026-07-16: "…a minute ago."; the parser must handle a/an.
 		LoginCustody.Report r = LoginCustody.parse("You last logged in a minute ago.");
 		assertEquals(MIN, r.agoMs);
 		assertEquals(MIN, r.granularityMs);
@@ -39,7 +39,7 @@ public class LoginCustodyTest
 	@Test
 	public void parsesHourMinuteForm()
 	{
-		// User-reported 2026-07-14: "1 hour, 1 min ago" — note the abbreviated unit.
+		// User-reported 2026-07-14: "1 hour, 1 min ago" (note the abbreviated unit).
 		LoginCustody.Report r = LoginCustody.parse("You last logged in 1 hour, 1 min ago.");
 		assertEquals(HOUR + MIN, r.agoMs);
 		assertEquals(MIN, r.granularityMs);
@@ -96,7 +96,7 @@ public class LoginCustodyTest
 	public void acquitsWhenReportMatchesOurLogout()
 	{
 		// The live b61 false-conviction scenario, judged right: 54-minute session, relog a
-		// minute after logout. Report "a minute ago" = the session END — matches lastSeen,
+		// minute after logout. Report "a minute ago" = the session END; matches lastSeen,
 		// login instants irrelevant.
 		LoginCustody.Report rep = LoginCustody.parse("You last logged in a minute ago.");
 		LoginCustody.Result res = LoginCustody.judge(rep, record(54 * MIN, MIN), NOW);
@@ -116,7 +116,7 @@ public class LoginCustodyTest
 	@Test
 	public void convictsWhenReportNewerThanOurLogout()
 	{
-		// We logged out 3h ago but the screen says a session ended 30m ago — someone was on.
+		// We logged out 3h ago but the screen says a session ended 30m ago, so someone was on.
 		LoginCustody.Report rep = LoginCustody.parse("You last logged in 30 minutes ago.");
 		LoginCustody.Result res = LoginCustody.judge(rep, record(4 * HOUR, 3 * HOUR), NOW);
 		assertEquals(LoginCustody.Verdict.CONVICTED, res.verdict);
@@ -126,7 +126,7 @@ public class LoginCustodyTest
 	public void doesNotMatchLoginInstants()
 	{
 		// The b60/b61 bug pinned: a report that matches our LOGIN (not our logout) is a session
-		// that ended while we believe we were still online — broken record → AMBIGUOUS, and
+		// that ended while we believe we were still online: broken record → AMBIGUOUS, and
 		// never a false ACQUITTED off the login anchor.
 		LoginCustody.Report rep = LoginCustody.parse("You last logged in 54 minutes ago.");
 		LoginCustody.Result res = LoginCustody.judge(rep, record(54 * MIN, MIN), NOW);
@@ -152,7 +152,7 @@ public class LoginCustodyTest
 	public void ambiguousOnCoarseGranularityEvenWhenMatching()
 	{
 		// Hour/day-granularity display: the rounding granule could hide a whole stealth session
-		// (spec's degraded-format rule) — matching is not enough to acquit.
+		// (spec's degraded-format rule); matching is not enough to acquit.
 		LoginCustody.Report rep = LoginCustody.parse("You last logged in 2 days ago.");
 		LoginCustody.Result res =
 			LoginCustody.judge(rep, record(3 * DAY, 2 * DAY + 3 * HOUR), NOW);
@@ -173,7 +173,7 @@ public class LoginCustodyTest
 	public void slackAbsorbsCrashStaleHeartbeat()
 	{
 		// Hard-kill exit: lastSeen is up to a heartbeat (~60s) older than the true disconnect,
-		// so our value reads slightly PAST the bucket — SLACK_MS keeps it an acquittal.
+		// so our value reads slightly PAST the bucket; SLACK_MS keeps it an acquittal.
 		LoginCustody.Report rep = LoginCustody.parse("You last logged in 10 minutes ago.");
 		LoginCustody.Result res = LoginCustody.judge(rep, record(HOUR, 11 * MIN + 50_000), NOW);
 		assertEquals(LoginCustody.Verdict.ACQUITTED, res.verdict);

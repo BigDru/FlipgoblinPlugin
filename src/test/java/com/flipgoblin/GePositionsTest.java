@@ -28,7 +28,7 @@ public class GePositionsTest
 		g.onOffer(2, snap(100, GrandExchangeOfferState.BUYING, 10, 4, 800, 200), 2000L);
 		p = g.active().get(0);
 		assertEquals(4, p.quantitySold);
-		assertEquals(1000L, p.firstSeen); // same offer — the position's clock does not reset
+		assertEquals(1000L, p.firstSeen); // same offer: the position's clock does not reset
 		assertEquals(GePositions.Phase.WORKING, p.phase);
 
 		g.onOffer(2, snap(100, GrandExchangeOfferState.BOUGHT, 10, 10, 2000, 200), 3000L);
@@ -61,10 +61,10 @@ public class GePositionsTest
 	public void escrow_countsWorkingBuyCoinsAndWorkingSellStockOnly()
 	{
 		GePositions g = new GePositions();
-		// WORKING buy 10 @ 200, 4 filled: GE holds 6×200 = 1200 escrowed coins, but NO items —
+		// WORKING buy 10 @ 200, 4 filled: GE holds 6×200 = 1200 escrowed coins, but NO items:
 		// the 4 bought sit in the collection box, independently collectable.
 		g.onOffer(0, snap(100, GrandExchangeOfferState.BUYING, 10, 4, 800, 200), 1L);
-		// WORKING sell 5 whips @ 1000, 2 sold: GE holds 3 unsold whips, but NO coins — the 2000
+		// WORKING sell 5 whips @ 1000, 2 sold: GE holds 3 unsold whips, but NO coins: the 2000
 		// proceeds sit in the collection box, so counting them would double-count on collect.
 		g.onOffer(1, snap(4151, GrandExchangeOfferState.SELLING, 5, 2, 2000, 1000), 2L);
 
@@ -110,7 +110,7 @@ public class GePositionsTest
 	public void zeroQuantityPairsAreOmitted()
 	{
 		GePositions g = new GePositions();
-		// Fresh buy with nothing filled: no items held yet — only escrowed coins.
+		// Fresh buy with nothing filled: no items held yet, only escrowed coins.
 		g.onOffer(0, snap(100, GrandExchangeOfferState.BUYING, 10, 0, 0, 200), 1L);
 		assertEquals(0, g.heldItemPairs().length);
 		assertEquals(2000, g.heldCoins());
@@ -119,7 +119,7 @@ public class GePositionsTest
 	/**
 	 * The 3.62m phantom peak (2026-07-13, docs/wealth-ledger-design.md): a WORKING sell's cumulative
 	 * {@code spent} was counted as uncollected coins, but a mid-offer collect moves those coins to
-	 * inventory with NO offer event fired — so the same gp was counted twice until the slot went
+	 * inventory with NO offer event fired, so the same gp was counted twice until the slot went
 	 * EMPTY. A working sell now contributes ZERO coins; only its unsold remainder (provably still on
 	 * the GE machine, not collectable) is counted as items.
 	 */
@@ -127,9 +127,9 @@ public class GePositionsTest
 	public void workingSell_countsUnsoldItemsButZeroCoins_phantomPeakRegression()
 	{
 		GePositions g = new GePositions();
-		// 1936 rubies listed @ 1205, 1119 sold — spent ≈ 1.32m cumulative (the poisoning shape).
+		// 1936 rubies listed @ 1205, 1119 sold; spent ≈ 1.32m cumulative (the poisoning shape).
 		g.onOffer(3, snap(1603, GrandExchangeOfferState.SELLING, 1936, 1119, 1_348_395, 1205), 1L);
-		assertEquals(0, g.heldCoins()); // the phantom coins — collectable, so counted zero
+		assertEquals(0, g.heldCoins()); // the phantom coins: collectable, so counted zero
 		int[][] items = g.heldItemPairs();
 		assertEquals(1, items.length);
 		assertEquals(1603, items[0][0]);

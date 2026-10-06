@@ -15,6 +15,7 @@ import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.GrandExchangeOffer;
+import net.runelite.api.GrandExchangeOfferState;
 import net.runelite.api.InventoryID;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
@@ -38,14 +39,14 @@ import okhttp3.OkHttpClient;
 @Slf4j
 @PluginDescriptor(
 	name = "Flip Goblin",
-	description = "Grand Exchange flip tracker — informational only. Zero network calls until you link your Flip Goblin account; settings live in the Flip Goblin side panel.",
+	description = "Grand Exchange flip tracker, informational only. Zero network calls until you link your Flip Goblin account; settings live in the Flip Goblin side panel.",
 	tags = { "grand exchange", "flipping", "prices", "margin" }
 )
 public class FlipGoblinPlugin extends Plugin
 {
 	// Build/version tag, visible in logs and the settings panel so support reports identify the
 	// running build. Dev jars carry b##; the publish pipeline stamps the dated release version.
-	static final String BUILD = "2026.08.30.2";
+	static final String BUILD = "2026.10.06";
 
 	/** The Flip Goblin API base URL, baked in. One constant, one server. */
 	static final String API_BASE = "https://flipgoblin-api.druex.workers.dev";
@@ -54,6 +55,8 @@ public class FlipGoblinPlugin extends Plugin
 	// accumulate in memory; the panel renders them and the sync client (opt-in) sends them.
 	private GeOfferDiffer differ;
 	private List<TradeRecord> records;
+	/** This character's Ignore events, oldest first. Client thread. */
+	private List<Dismissal> dismissals;
 
 	// Offline-fill recovery: per-slot baselines are saved per RuneScape profile (per
 	// character), because an account switch must never diff against another character's
@@ -68,18 +71,23 @@ public class FlipGoblinPlugin extends Plugin
 	private static final String BASELINE_KEY = "slotBaselines";
 	/** Persisted fill history (per character): cross-session cost basis, capped by age and count. */
 	private static final String RECORDS_KEY = "tradeRecords";
-	/** Per-character token store (RS-profile-scoped) — one token per character.
+	/** Saved Ignore events (per character), trimmed like the records. */
+	private static final String DISMISSALS_KEY = "flipDismissals";
+	private static final int DISMISSALS_MAX = 200;
+	private static final java.lang.reflect.Type DISMISSALS_TYPE =
+		new TypeToken<List<Dismissal>>() {}.getType();
+	/** Per-character token store (RS-profile-scoped): one token per character.
 	 *  The literals live in LinkedCharacters, which enumerates/unlinks these stores for the panel. */
 	private static final String TOKEN_PROFILE_KEY = LinkedCharacters.TOKEN_PROFILE_KEY;
 	/** Which character's profile the visible token field currently mirrors (global scope). */
 	private static final String TOKEN_OWNER_KEY = LinkedCharacters.TOKEN_OWNER_KEY;
-	/** True while syncTokenForProfile writes the field itself — stops the ConfigChanged echo. */
+	/** True while syncTokenForProfile writes the field itself. Stops the ConfigChanged echo. */
 	private volatile boolean mirroringToken;
-	/** Current character name (client thread via GameTick) — the display label sent with syncs. */
+	/** Current character name (client thread via GameTick): the display label sent with syncs. */
 	private volatile String rsn;
 	/**
 	 * Lapse lock: the server says this character is past the tier's cap.
-	 * While true the plugin REFUSES all operation (no syncs, no market data — local tracking only)
+	 * While true the plugin REFUSES all operation (no syncs, no market data; local tracking only)
 	 * and the panel says "locked". Refreshed from /plugin/me at login, on token changes, and each
 	 * targets cycle; an unreachable check keeps the previous verdict.
 	 */
@@ -110,11 +118,15 @@ public class FlipGoblinPlugin extends Plugin
 	private AssetSnapshot bankSnapshot;
 	private boolean bankFreshThisSession;
 	private boolean hopping;
+	/** True while in a world. Every map load re-fires LOGGED_IN; while set, that is not a login. */
+	private boolean inWorld;
+	/** The bank reminder shows once per login; hops and reconnects don't repeat it. */
+	private boolean bankPromptShown;
 	private int[][] liveInventory;
 	private int[][] liveEquipment;
 
 	// GE positions: the 8 slots as live positions; replayed at login, so no persistence.
-	// Read by the overlay on the client thread (all mutation is client-thread too — no sync needed).
+	// Read by the overlay on the client thread (all mutation is client-thread too, so no sync needed).
 	private GePositions positions;
 	private long sessionRealized;
 
@@ -133,7 +145,7 @@ public class FlipGoblinPlugin extends Plugin
 	 *  box, [4] = the pending coins box). */
 	private static final int COLLECTION_BOX_GROUP = 402;
 	private final CollectLedger collectLedger = new CollectLedger();
-	/** Offline fills found at login replay — counted only once this session judges ACQUITTED
+	/** Offline fills found at login replay, counted only once this session judges ACQUITTED
 	 *  (nothing can touch the collection box while logged out). */
 	private final List<TradeRecord> pendingRecoveredFills = new ArrayList<>();
 	private boolean collectionBoxOpen;
@@ -147,9 +159,20 @@ public class FlipGoblinPlugin extends Plugin
 	 * mid-session never judges, and there the heartbeat save is the staleness guard.
 	 */
 	private boolean ledgerAuthoritative = true;
-	/** The main GE interface — the offer-detail view renders INSIDE it as dynamic children. */
+	/** The main GE interface. The offer-detail view renders INSIDE it as dynamic children. */
 	private static final int GE_GROUP = 465;
 	private boolean geOpen;
+	/** Each slot's last offer state seen this login, to tell a fresh placement from a login refire. */
+	private final Map<Integer, GrandExchangeOfferState> slotStates = new java.util.HashMap<>();
+	/** Inventory cash (coins + platinum, in gp) at the last tick, before any buy now pending. */
+	private long invCashAtTick;
+	/** Buys placed in the current settle window: their total cost and the cash held before them. */
+	private long pendingDrawCost;
+	private long pendingDrawInvBefore;
+	private int pendingDrawTicks;
+	/** Counts bank container updates; a real update makes a pending correction unnecessary. */
+	private int bankEvents;
+	private int pendingDrawBankEvents;
 	/** Witness settle: ticks since the viewed slot changed (boxes populate a beat after the card). */
 	private int viewedSlotVar = -1;
 	private int viewedSettleTicks;
@@ -172,7 +195,7 @@ public class FlipGoblinPlugin extends Plugin
 	private net.runelite.client.ui.overlay.tooltip.TooltipManager tooltipManager;
 	private PriceClient prices;
 
-	// The session panel (Swing — EDT-only; updates are marshalled via invokeLater).
+	// The session panel (Swing, EDT-only; updates are marshalled via invokeLater).
 	@Inject
 	private ClientToolbar clientToolbar;
 	@Inject
@@ -203,6 +226,7 @@ public class FlipGoblinPlugin extends Plugin
 	{
 		differ = new GeOfferDiffer();
 		records = new ArrayList<>();
+		dismissals = new ArrayList<>();
 		positions = new GePositions();
 		prices = new PriceClient(okHttpClient, gson);
 		targets = new TargetsClient(okHttpClient);
@@ -210,6 +234,7 @@ public class FlipGoblinPlugin extends Plugin
 		overlayManager.add(geInfoOverlay);
 		overlayManager.add(custodyOverlay);
 		panel = new FlipGoblinPanel(itemManager, configManager, config);
+		panel.setIgnoreHandlers(this::ignoreItem, this::undoIgnore);
 		navButton = NavigationButton.builder()
 			.tooltip("Flip Goblin")
 			.icon(navIcon())
@@ -221,7 +246,7 @@ public class FlipGoblinPlugin extends Plugin
 		assetsPusher = new AssetsPusher(executor, this::sendAssets);
 		historyImporter = new GeHistoryImporter(client, itemManager);
 		// Custody: plugin enabled while ALREADY at the login screen sees no LOGIN_SCREEN
-		// transition — seed the flag so the coming login still judges (vs. reading as a reconnect).
+		// transition; seed the flag so the coming login still judges (vs. reading as a reconnect).
 		if (custody == null)
 		{
 			custody = new CustodyTracker(configManager, gson, chatMessageManager, custodyHost());
@@ -233,7 +258,7 @@ public class FlipGoblinPlugin extends Plugin
 		clientThread.invokeLater(this::recomputeAssets);
 		// Retry loop for the offline queue: a no-op when sync is off, unconfigured, or the queue is empty.
 		flusher = executor.scheduleWithFixedDelay(this::flushIfEnabled, 30, 30, TimeUnit.SECONDS);
-		// Slow-cadence targets refresh — only ever calls out when the account link is set.
+		// Slow-cadence targets refresh. Only ever calls out when the account link is set.
 		targetsRefresher = executor.scheduleWithFixedDelay(this::refreshTargetsIfLinked, 5, 300, TimeUnit.SECONDS);
 		log.info("Flip Goblin started (build {})", BUILD);
 	}
@@ -283,6 +308,7 @@ public class FlipGoblinPlugin extends Plugin
 		panel = null;
 		differ = null;
 		records = null;
+		dismissals = null;
 		log.debug("Flip Goblin stopped");
 	}
 
@@ -300,7 +326,7 @@ public class FlipGoblinPlugin extends Plugin
 		return img;
 	}
 
-	/** Tracks the current character name — the local player resolves a few ticks after LOGGED_IN. */
+	/** Tracks the current character name; the local player resolves a few ticks after LOGGED_IN. */
 	@Subscribe
 	public void onGameTick(GameTick tick)
 	{
@@ -308,13 +334,13 @@ public class FlipGoblinPlugin extends Plugin
 		if (p != null && p.getName() != null && !p.getName().equals(rsn))
 		{
 			rsn = p.getName();
-			pushLinkStatus(); // name just resolved/changed — refresh the panel's Account row
+			pushLinkStatus(); // name just resolved/changed: refresh the panel's Account row
 		}
 		if (custody != null && custody.heartbeat(Instant.now().toEpochMilli()))
 		{
 			// Staleness guard: keep the stored uncollected ledger tracking the live one, so a
 			// plugin enabled mid-session (which never fresh-login-resets) can't leave an old
-			// store to be wrongly restored by a later acquittal. ≤8 tiny entries — cheap.
+			// store to be wrongly restored by a later acquittal. ≤8 tiny entries, so cheap.
 			persistCollectLedger();
 		}
 		if (collectArmedTicks > 0)
@@ -323,14 +349,15 @@ public class FlipGoblinPlugin extends Plugin
 		}
 		pollCollectionBox();
 		pollOfferDetail();
+		settleBankDraw();
 	}
 
 	/**
 	 * Widget ground truth, authoritative while visible: while the collection box
-	 * (group 402) is open, resync each slot's uncollected ledger to exactly what it renders —
-	 * children 4..11 are the GE slots; a slot's dynamic child [3] is the pending items box,
+	 * (group 402) is open, resync each slot's uncollected ledger to exactly what it renders.
+	 * Children 4..11 are the GE slots; a slot's dynamic child [3] is the pending items box,
 	 * [4] the pending coins box (item 995 × gp). Heals every drift on first glance. 8 slots ×
-	 * 2 child reads per tick, only while the interface is open — negligible.
+	 * 2 child reads per tick, only while the interface is open, so negligible.
 	 */
 	private void pollCollectionBox()
 	{
@@ -339,7 +366,7 @@ public class FlipGoblinPlugin extends Plugin
 			return;
 		}
 		// Slot widgets live DEEP in group 402 (per slot: dynamic child [3] = pending items,
-		// [4] = pending coins; the offer's icon sits at [21] — excluded by reading only 3/4).
+		// [4] = pending coins; the offer's icon sits at [21], excluded by reading only 3/4).
 		// Fixed top-level indices miss them, so scan the whole tree structurally instead: any
 		// widget whose DYNAMIC children carry an item at index 3 or 4 is a slot. Runs only
 		// while the box is open; the tree is a few dozen nodes.
@@ -378,9 +405,10 @@ public class FlipGoblinPlugin extends Plugin
 			if (items != null && items.getItemId() > 0 && items.getItemId() != ItemIds.BLANK_BOX
 				&& items.getItemQuantity() > 0)
 			{
-				if (items.getItemId() == ItemIds.COINS)
+				long cash = ItemIds.cashValue(items.getItemId());
+				if (cash > 0)
 				{
-					coins += items.getItemQuantity(); // a coins-only offer renders in the items box
+					coins += cash * items.getItemQuantity(); // a coins-only offer renders in the items box
 				}
 				else
 				{
@@ -389,9 +417,9 @@ public class FlipGoblinPlugin extends Plugin
 				}
 			}
 			net.runelite.api.widgets.Widget coinBox = dyn[4];
-			if (coinBox != null && coinBox.getItemId() == ItemIds.COINS && coinBox.getItemQuantity() > 0)
+			if (coinBox != null && coinBox.getItemQuantity() > 0)
 			{
-				coins += coinBox.getItemQuantity();
+				coins += ItemIds.cashValue(coinBox.getItemId()) * coinBox.getItemQuantity();
 			}
 			if (itemQty > 0 || coins > 0)
 			{
@@ -441,7 +469,7 @@ public class FlipGoblinPlugin extends Plugin
 		}
 		if (sel <= 0 || ++viewedSettleTicks < 2)
 		{
-			return; // boxes render a beat after the card — an all-zeros first read would wipe truth
+			return; // boxes render a beat after the card; an all-zeros first read would wipe truth
 		}
 		int slot = sel - 1; // the varbit is 1-based (0 = no offer selected)
 		GePositions.Position pos = null;
@@ -455,7 +483,7 @@ public class FlipGoblinPlugin extends Plugin
 		}
 		if (pos == null)
 		{
-			return; // nothing on the board for this slot — nothing witnessable
+			return; // nothing on the board for this slot, so nothing witnessable
 		}
 		net.runelite.api.widgets.Widget root = client.getWidget(GE_GROUP, 0);
 		net.runelite.api.widgets.Widget[] rootKids = root == null ? null : root.getStaticChildren();
@@ -487,9 +515,10 @@ public class FlipGoblinPlugin extends Plugin
 				{
 					continue;
 				}
-				if (d.getItemId() == ItemIds.COINS)
+				long cash = ItemIds.cashValue(d.getItemId());
+				if (cash > 0)
 				{
-					coins += d.getItemQuantity();
+					coins += cash * d.getItemQuantity();
 				}
 				else if (d.getItemId() == pos.itemId)
 				{
@@ -497,7 +526,7 @@ public class FlipGoblinPlugin extends Plugin
 				}
 				else
 				{
-					return; // an item that is neither coins nor the viewed offer — don't witness
+					return; // an item that is neither coins nor the viewed offer: don't witness
 				}
 			}
 		}
@@ -511,9 +540,9 @@ public class FlipGoblinPlugin extends Plugin
 	/**
 	 * Collect detection: every collect variant fires a menu click (per-slot boxes,
 	 * main-screen Collect / Collect-to-bank, the bank's collection box). Scope is ambiguous from
-	 * the option string alone, so err LOW — zero the whole ledger; the 402 poll (or the next
+	 * the option string alone, so err LOW: zero the whole ledger; the 402 poll (or the next
 	 * glance) restores whatever actually remains. Collect-to-bank lands in the frozen-bank blind
-	 * spot by design — no inventory delta expected. A stray non-GE "Collect…" option zeroing the
+	 * spot by design (no inventory delta expected). A stray non-GE "Collect…" option zeroing the
 	 * ledger only ever deflates, and heals the same way.
 	 */
 	@Subscribe
@@ -527,7 +556,7 @@ public class FlipGoblinPlugin extends Plugin
 		if (option.toLowerCase(java.util.Locale.ROOT).contains("bank"))
 		{
 			// Collect-to-bank: no inventory delta by design (coins land behind the frozen bank
-			// photo) — the only variant the delta signal can't follow. Err low, zero everything.
+			// photo), the only variant the delta signal can't follow. Err low, zero everything.
 			if (collectLedger.zeroAll())
 			{
 				persistCollectLedger();
@@ -536,7 +565,7 @@ public class FlipGoblinPlugin extends Plugin
 			return;
 		}
 		// Collect-to-inventory (any variant, any scope): arm the delta window instead of zeroing.
-		// The next inventory event's ARRIVALS decrement the ledger exactly (signal 3 — the closed
+		// The next inventory event's ARRIVALS decrement the ledger exactly (signal 3, the closed
 		// system: with the GE open, positive inventory deltas can only be collects). If nothing
 		// arrives (full inventory, misclick), nothing moved and the ledger correctly stands.
 		collectArmedTicks = 3;
@@ -569,7 +598,7 @@ public class FlipGoblinPlugin extends Plugin
 		}
 		catch (RuntimeException e)
 		{
-			log.warn("corrupt collect ledger in profile — starting clean", e);
+			log.warn("corrupt collect ledger in profile, starting clean", e);
 			return null;
 		}
 	}
@@ -593,7 +622,7 @@ public class FlipGoblinPlugin extends Plugin
 			String token = configManager.getConfiguration(CONFIG_GROUP, key, TOKEN_PROFILE_KEY);
 			if (token == null || token.trim().isEmpty())
 			{
-				continue; // linked characters only — matches the website's "keys they linked" list
+				continue; // linked characters only; matches the website's "keys they linked" list
 			}
 			List<TradeRecord> recs = null;
 			AssetSnapshot bank = null;
@@ -612,7 +641,7 @@ public class FlipGoblinPlugin extends Plugin
 			}
 			catch (RuntimeException e)
 			{
-				log.warn("corrupt store for linked character {} — counting what parsed", p.getDisplayName(), e);
+				log.warn("corrupt store for linked character {}, counting what parsed", p.getDisplayName(), e);
 			}
 			out.add(new CharacterLedger.Character(
 				LinkedCharacters.displayName(p.getDisplayName(), p.getType()), recs, bank));
@@ -638,7 +667,7 @@ public class FlipGoblinPlugin extends Plugin
 	/**
 	 * Seed the differ from this character's persisted baseline exactly once per login. LOGGED_IN fires
 	 * before the GE offer replay, and the persisted map always mirrors the live baseline (re-persisted on
-	 * every event), so re-seeding on hops/re-logins is value-identical — only truly-offline deltas emit,
+	 * every event), so re-seeding on hops/re-logins is value-identical: only truly-offline deltas emit,
 	 * and they emit as recovered fills with their offline window.
 	 */
 	@Subscribe
@@ -646,14 +675,19 @@ public class FlipGoblinPlugin extends Plugin
 	{
 		if (event.getGameState() == GameState.LOGGED_IN)
 		{
+			if (inWorld)
+			{
+				return; // a map load, not a login
+			}
+			inWorld = true;
 			syncTokenForProfile(); // per-character token BEFORE anything that might sync
 			executor.submit(this::refreshLockStatus); // is THIS character allowed to operate?
 			loadOtherCharacters(); // the profile switch changes who "the others" are
 			seedFromProfile();
 			if (hopping)
 			{
-				hopping = false; // world hop, not a fresh login — assets can't have drifted
-				custody.recordLogin(false); // the server may count a hop as a login — record it
+				hopping = false; // world hop, not a fresh login, so assets can't have drifted
+				custody.recordLogin(false); // the server may count a hop as a login, so record it
 			}
 			else
 			{
@@ -662,6 +696,14 @@ public class FlipGoblinPlugin extends Plugin
 		}
 		else if (event.getGameState() == GameState.LOGIN_SCREEN || event.getGameState() == GameState.HOPPING)
 		{
+			inWorld = false;
+			slotStates.clear(); // the next login refires every slot; those are not placements
+			pendingDrawTicks = 0;
+			pendingDrawCost = 0;
+			if (event.getGameState() == GameState.LOGIN_SCREEN)
+			{
+				bankPromptShown = false; // a real logout ends the session
+			}
 			seededThisLogin = false; // next LOGGED_IN re-seeds (possibly a different character)
 			hopping = event.getGameState() == GameState.HOPPING;
 			// Custody: stamp the clean logout instant and drop the welcome stash. The verdict
@@ -672,10 +714,55 @@ public class FlipGoblinPlugin extends Plugin
 				custody.onLeaveWorld(event.getGameState() == GameState.LOGIN_SCREEN);
 			}
 		}
+		else if (event.getGameState() == GameState.CONNECTION_LOST)
+		{
+			inWorld = false; // the reconnect runs the login path
+			slotStates.clear();
+			pendingDrawTicks = 0;
+			pendingDrawCost = 0;
+		}
+	}
+
+	/** A buy was just placed at the GE. Its cost is checked against the inventory once it settles. */
+	private void noteBuyPlaced(long cost)
+	{
+		if (pendingDrawTicks == 0)
+		{
+			pendingDrawInvBefore = invCashAtTick;
+			pendingDrawBankEvents = bankEvents;
+		}
+		pendingDrawCost += cost;
+		pendingDrawTicks = BankDraw.SETTLE_TICKS;
 	}
 
 	/**
-	 * Replace the in-memory fill history with this character's persisted records (7d horizon) —
+	 * Once a placed buy has settled, takes whatever the inventory did not pay out of the stored
+	 * bank snapshot, because the GE paid it from the bank. Skipped if the bank itself updated
+	 * in the meantime, since that snapshot is already current. Client thread, once per tick.
+	 */
+	private void settleBankDraw()
+	{
+		long invCash = AssetSnapshot.of(0L, liveInventory).coins();
+		if (pendingDrawTicks > 0 && --pendingDrawTicks == 0)
+		{
+			long gp = BankDraw.shortfall(pendingDrawCost, pendingDrawInvBefore, invCash);
+			pendingDrawCost = 0;
+			if (gp > 0 && bankSnapshot != null && bankEvents == pendingDrawBankEvents)
+			{
+				bankSnapshot = BankDraw.withdraw(bankSnapshot, gp);
+				configManager.setRSProfileConfiguration(CONFIG_GROUP, ASSETS_KEY, gson.toJson(bankSnapshot));
+				log.debug("GE paid {} gp of a buy from the bank; bank snapshot corrected", gp);
+				recomputeAssets();
+			}
+		}
+		if (pendingDrawTicks == 0)
+		{
+			invCashAtTick = invCash;
+		}
+	}
+
+	/**
+	 * Replace the in-memory fill history with this character's persisted records (7d horizon):
 	 * cross-session cost basis, so a sell placed today matches yesterday's buy. Client thread
 	 * (names resolve via ItemComposition).
 	 */
@@ -685,6 +772,7 @@ public class FlipGoblinPlugin extends Plugin
 		{
 			return;
 		}
+		loadDismissals();
 		String json = configManager.getRSProfileConfiguration(CONFIG_GROUP, RECORDS_KEY);
 		if (json == null || json.isEmpty())
 		{
@@ -704,7 +792,7 @@ public class FlipGoblinPlugin extends Plugin
 				itemNames.computeIfAbsent(r.itemId, id -> itemManager.getItemComposition(id).getName());
 			}
 			// Re-date any history imports still carrying detection stamps (e.g. imported by a
-			// build without feed refinement) — refinement is idempotent: already-dated records
+			// build without feed refinement). Refinement is idempotent: already-dated records
 			// match the same minute again and apply as no-ops.
 			List<TradeRecord> unrefined = new ArrayList<>();
 			for (TradeRecord r : loaded)
@@ -718,19 +806,137 @@ public class FlipGoblinPlugin extends Plugin
 			{
 				executor.submit(() -> refineImports(unrefined));
 			}
-			sessionRealized = SessionStats.match(records).totalRealized;
+			sessionRealized = SessionStats.match(records, dismissalsView()).totalRealized;
 			List<TradeRecord> copy = new ArrayList<>(records);
 			Map<Integer, String> names = new java.util.HashMap<>(itemNames);
+			List<Dismissal> dis = new ArrayList<>(dismissalsView());
 			FlipGoblinPanel target = panel;
 			if (target != null)
 			{
-				SwingUtilities.invokeLater(() -> target.update(copy, names));
+				SwingUtilities.invokeLater(() -> target.update(copy, dis, names));
 			}
 			log.debug("loaded {} persisted trade records", loaded.size());
 		}
 		catch (RuntimeException e)
 		{
-			log.warn("corrupt trade records in profile — ignoring", e);
+			log.warn("corrupt trade records in profile, ignoring", e);
+		}
+	}
+
+	/** Loads this character's saved Ignore events. Client thread. */
+	private void loadDismissals()
+	{
+		if (dismissals == null)
+		{
+			return;
+		}
+		dismissals.clear();
+		String json = configManager.getRSProfileConfiguration(CONFIG_GROUP, DISMISSALS_KEY);
+		if (json == null || json.isEmpty())
+		{
+			return;
+		}
+		try
+		{
+			List<Dismissal> loaded = gson.fromJson(json, DISMISSALS_TYPE);
+			if (loaded != null)
+			{
+				dismissals.addAll(loaded);
+				dismissals.sort(java.util.Comparator.comparingLong((Dismissal d) -> d.timestamp));
+			}
+		}
+		catch (RuntimeException e)
+		{
+			log.warn("corrupt ignore events in profile, ignoring", e);
+		}
+	}
+
+	private void saveDismissals()
+	{
+		long cutoff = Instant.now().toEpochMilli() - RECORDS_MAX_AGE_MS;
+		List<Dismissal> keep = new ArrayList<>();
+		for (Dismissal d : dismissals)
+		{
+			if (d.timestamp >= cutoff)
+			{
+				keep.add(d);
+			}
+		}
+		if (keep.size() > DISMISSALS_MAX)
+		{
+			keep = new ArrayList<>(keep.subList(keep.size() - DISMISSALS_MAX, keep.size()));
+		}
+		configManager.setRSProfileConfiguration(CONFIG_GROUP, DISMISSALS_KEY, gson.toJson(keep));
+	}
+
+	/** The Ignore events; empty while the plugin is stopped. */
+	private List<Dismissal> dismissalsView()
+	{
+		List<Dismissal> d = dismissals;
+		return d == null ? java.util.Collections.emptyList() : d;
+	}
+
+	/** Panel Ignore: the item's open units are not a flip. Saved locally, synced when linked. */
+	void ignoreItem(int itemId)
+	{
+		clientThread.invokeLater(() ->
+		{
+			if (records == null || dismissals == null)
+			{
+				return;
+			}
+			Dismissal d = new Dismissal(itemId, Instant.now().toEpochMilli());
+			dismissals.add(d);
+			saveDismissals();
+			repaintRecords();
+			SyncClient s = sync;
+			if (s != null)
+			{
+				s.enqueueDismissal(d);
+				executor.submit(this::flushIfEnabled);
+			}
+		});
+	}
+
+	/** Panel Undo: removes the item's newest Ignore, locally and on the server when linked. */
+	void undoIgnore(int itemId)
+	{
+		clientThread.invokeLater(() ->
+		{
+			if (records == null || dismissals == null)
+			{
+				return;
+			}
+			for (int i = dismissals.size() - 1; i >= 0; i--)
+			{
+				if (dismissals.get(i).itemId == itemId)
+				{
+					Dismissal d = dismissals.remove(i);
+					saveDismissals();
+					repaintRecords();
+					SyncClient s = sync;
+					if (s != null)
+					{
+						s.enqueueRestore(d);
+						executor.submit(this::flushIfEnabled);
+					}
+					return;
+				}
+			}
+		});
+	}
+
+	/** Recomputes session P/L and repaints the panel. Client thread. */
+	private void repaintRecords()
+	{
+		sessionRealized = SessionStats.match(records, dismissalsView()).totalRealized;
+		List<TradeRecord> copy = new ArrayList<>(records);
+		List<Dismissal> dis = new ArrayList<>(dismissalsView());
+		Map<Integer, String> names = new java.util.HashMap<>(itemNames);
+		FlipGoblinPanel target = panel;
+		if (target != null)
+		{
+			SwingUtilities.invokeLater(() -> target.update(copy, dis, names));
 		}
 	}
 
@@ -770,19 +976,23 @@ public class FlipGoblinPlugin extends Plugin
 			}
 			catch (RuntimeException e)
 			{
-				log.warn("corrupt asset snapshot in profile — ignoring", e);
+				log.warn("corrupt asset snapshot in profile, ignoring", e);
 			}
 		}
 		recomputeAssets();
-		// CONSOLE via ChatMessageManager — a raw client.addChatMessage(GAMEMESSAGE, …) here NPEs
+		// CONSOLE via ChatMessageManager: a raw client.addChatMessage(GAMEMESSAGE, …) here NPEs
 		// OTHER plugins' chat handlers (injected game messages re-enter every subscriber).
 		// CONSOLE is the plugin-notice type, and the manager queues onto the client thread
 		// properly.
-		chatMessageManager.queue(net.runelite.client.chat.QueuedMessage.builder()
-			.type(ChatMessageType.CONSOLE)
-			.value("Flip Goblin: open your bank to refresh your asset snapshot"
-				+ (bankSnapshot == null ? "." : " (assets may have changed since your last visit)."))
-			.build());
+		if (!bankPromptShown)
+		{
+			bankPromptShown = true;
+			chatMessageManager.queue(net.runelite.client.chat.QueuedMessage.builder()
+				.type(ChatMessageType.CONSOLE)
+				.value("Flip Goblin: open your bank to refresh your asset snapshot"
+					+ (bankSnapshot == null ? "." : " (assets may have changed since your last visit)."))
+				.build());
+		}
 	}
 
 	/** The plugin's side of the custody handshake: the ledger consequences of each outcome. */
@@ -795,7 +1005,7 @@ public class FlipGoblinPlugin extends Plugin
 			{
 				// A new custody window starts the uncollected ledger EMPTY (never-inflate
 				// floor); the judge restores the saved entries only if this login acquits.
-				// Saves are FROZEN until then — the store is the carry the judge needs intact.
+				// Saves are FROZEN until then: the store is the carry the judge needs intact.
 				collectLedger.reset();
 				pendingRecoveredFills.clear();
 				ledgerAuthoritative = false;
@@ -817,7 +1027,7 @@ public class FlipGoblinPlugin extends Plugin
 					}
 				}
 				pendingRecoveredFills.clear();
-				ledgerAuthoritative = true; // judged — from here the live ledger IS the truth to save
+				ledgerAuthoritative = true; // judged; from here the live ledger IS the truth to save
 				persistCollectLedger();
 				recomputeAssets(); // an acquitted chain changes the estimate + the sync's bankFresh flag
 			}
@@ -848,7 +1058,7 @@ public class FlipGoblinPlugin extends Plugin
 	}
 
 	/**
-	 * The welcome screen (group 378) feeds the custody judge — the text is provably populated at
+	 * The welcome screen (group 378) feeds the custody judge. The text is provably populated at
 	 * WidgetLoaded time, so it is captured here.
 	 */
 	@Subscribe
@@ -899,9 +1109,10 @@ public class FlipGoblinPlugin extends Plugin
 	{
 		if (event.getContainerId() == InventoryID.BANK.getId())
 		{
-			// BANK-ONLY on purpose: inventory/equipment are live below — merging them here would
+			// BANK-ONLY on purpose: inventory/equipment are live below; merging them here would
 			// double-count the moment they change while the bank stays frozen.
 			bankSnapshot = AssetSnapshot.of(Instant.now().toEpochMilli(), pairsOf(event.getItemContainer()));
+			bankEvents++;
 			bankFreshThisSession = true;
 			configManager.setRSProfileConfiguration(CONFIG_GROUP, ASSETS_KEY, gson.toJson(bankSnapshot));
 			// Witnessing the bank restarts its custody chain: from here the photo carries across
@@ -914,13 +1125,16 @@ public class FlipGoblinPlugin extends Plugin
 			liveInventory = pairsOf(event.getItemContainer());
 			if (collectArmedTicks > 0)
 			{
-				// The armed collect's arrivals: coins ride under the coin item id, the rest is stock.
+				// The armed collect's arrivals: coins and platinum are cash, the rest is stock.
 				java.util.Map<Integer, Integer> arrived = CollectLedger.arrivals(before, liveInventory);
 				Integer coins = arrived.remove(ItemIds.COINS);
-				if (!arrived.isEmpty() || coins != null)
+				Integer platinum = arrived.remove(ItemIds.PLATINUM_TOKEN);
+				if (!arrived.isEmpty() || coins != null || platinum != null)
 				{
 					collectArmedTicks = 0;
-					if (collectLedger.applyCollectDelta(arrived, coins == null ? 0 : coins))
+					long cash = (coins == null ? 0 : coins)
+						+ (platinum == null ? 0 : platinum * ItemIds.cashValue(ItemIds.PLATINUM_TOKEN));
+					if (collectLedger.applyCollectDelta(arrived, cash))
 					{
 						persistCollectLedger();
 					}
@@ -940,9 +1154,9 @@ public class FlipGoblinPlugin extends Plugin
 
 	/**
 	 * Dump a container to (id, qty) pairs. Two cache-variant hazards, handled in ORDER:
-	 * (1) bank PLACEHOLDERS are DROPPED — they arrive with qty 1, not 0, and canonicalize()
+	 * (1) bank PLACEHOLDERS are DROPPED: they arrive with qty 1, not 0, and canonicalize()
 	 * would resolve them to the REAL item, minting a phantom 1×item at full bid; a placeholder
-	 * is not an asset. (2) survivors are CANONICALIZED so noted stacks fold to their real id —
+	 * is not an asset. (2) survivors are CANONICALIZED so noted stacks fold to their real id;
 	 * withdraw-as-note otherwise reports ids the price feed has never heard of and the stack
 	 * silently counts ZERO. Client thread only (composition lookups).
 	 */
@@ -972,7 +1186,7 @@ public class FlipGoblinPlugin extends Plugin
 
 	/**
 	 * Compose the always-current asset view: frozen bank + live inventory/equipment + GE-held items
-	 * and coins. No duplicates by construction — every source is authoritative for its own container.
+	 * and coins. No duplicates by construction: every source is authoritative for its own container.
 	 */
 	private void recomputeAssets()
 	{
@@ -985,7 +1199,7 @@ public class FlipGoblinPlugin extends Plugin
 		boolean fresh = bankFreshThisSession;
 		// Custody: an ACQUITTED chain proves the stored photo was never out of our custody, so
 		// it counts WITHOUT a re-open (estimate + history immediately). Otherwise the gated
-		// regime holds — the estimate excludes the unwitnessed bank and syncs carry
+		// regime holds: the estimate excludes the unwitnessed bank and syncs carry
 		// bankFresh=false (no history row) until the first bank-open; the full composite still
 		// syncs either way (the site keeps its last-known bank table).
 		boolean trusted = fresh || (custody != null && custody.bankChainTrusted() && bank != null);
@@ -1030,7 +1244,7 @@ public class FlipGoblinPlugin extends Plugin
 			});
 		}
 		// "All characters" scope: the other linked characters' summed contribution rides the same
-		// panel push (DISPLAY ONLY — the sync below stays strictly this character's composite).
+		// panel push (DISPLAY ONLY; the sync below stays strictly this character's composite).
 		CharacterLedger.Totals others = config.panelScopeAll()
 			? CharacterLedger.aggregate(otherCharacters, bids, Instant.now().toEpochMilli(), RECORDS_MAX_AGE_MS)
 			: null;
@@ -1111,7 +1325,7 @@ public class FlipGoblinPlugin extends Plugin
 		}
 		catch (RuntimeException e)
 		{
-			log.warn("corrupt slot baseline in profile — starting fresh", e);
+			log.warn("corrupt slot baseline in profile, starting fresh", e);
 			differ = new GeOfferDiffer();
 		}
 	}
@@ -1119,7 +1333,7 @@ public class FlipGoblinPlugin extends Plugin
 	/**
 	 * Fold each cumulative GE offer event into the differ; a returned fill delta is a captured trade record.
 	 * The GE exposes no server fill-time, so we stamp fills at event-arrival time (recovered fills carry
-	 * their offline window — see GeOfferDiffer).
+	 * their offline window; see GeOfferDiffer).
 	 */
 	@Subscribe
 	public void onGrandExchangeOfferChanged(GrandExchangeOfferChanged event)
@@ -1128,7 +1342,7 @@ public class FlipGoblinPlugin extends Plugin
 		GrandExchangeOffer offer = event.getOffer();
 		if (GeOfferDiffer.isLogoutClear(offer.getState(), client.getGameState()))
 		{
-			// Client-side reset on logout/hop, not a collection — folding it would wipe the differ
+			// Client-side reset on logout/hop, not a collection. Folding it would wipe the differ
 			// baseline + positions board and orphan every fill that lands before re-login.
 			return;
 		}
@@ -1142,8 +1356,14 @@ public class FlipGoblinPlugin extends Plugin
 			offer.getPrice());
 		if (offer.getItemId() > 0)
 		{
-			// Client thread — the only place ItemComposition may be read; UI layers get plain strings.
+			// Client thread: the only place ItemComposition may be read; UI layers get plain strings.
 			itemNames.computeIfAbsent(offer.getItemId(), id -> itemManager.getItemComposition(id).getName());
+		}
+		GrandExchangeOfferState prevState = slotStates.put(event.getSlot(), offer.getState());
+		if (geOpen && offer.getState() == GrandExchangeOfferState.BUYING && offer.getQuantitySold() == 0
+			&& offer.getSpent() == 0 && (prevState == null || prevState == GrandExchangeOfferState.EMPTY))
+		{
+			noteBuyPlaced(offer.getPrice() * (long) offer.getTotalQuantity());
 		}
 		positions.onOffer(event.getSlot(), snapshot, ts);
 		// The uncollected ledger diffs the same stream (fills in, EMPTY = collected out).
@@ -1154,7 +1374,7 @@ public class FlipGoblinPlugin extends Plugin
 		differ.onOffer(event.getSlot(), snapshot, ts)
 			.ifPresent(r -> {
 				// Forensic tripwire: an entire offer materializing as ONE live fill is either a
-				// real instant fill or a stale-state refire that slipped the identity guards —
+				// real instant fill or a stale-state refire that slipped the identity guards;
 				// log the full event so any anomaly is diagnosable from client.log.
 				if (!r.recovered && r.quantity == snapshot.totalQuantity)
 				{
@@ -1162,7 +1382,7 @@ public class FlipGoblinPlugin extends Plugin
 						BUILD, event.getSlot(), r.itemId, r.side, r.quantity, r.price, snapshot.state);
 				}
 				records.add(r);
-				saveRecords(); // fills survive restarts — cross-session cost basis
+				saveRecords(); // fills survive restarts (cross-session cost basis)
 				if (r.recovered)
 				{
 					// Offline fills count in the uncollected ledger only under ACQUITTED (a stealth
@@ -1181,13 +1401,14 @@ public class FlipGoblinPlugin extends Plugin
 				{
 					executor.submit(() -> refineRecoveredFill(r)); // borrow the WHEN from the feed
 				}
-				sessionRealized = SessionStats.match(records).totalRealized;
+				sessionRealized = SessionStats.match(records, dismissalsView()).totalRealized;
 				List<TradeRecord> copy = new ArrayList<>(records); // snapshot for the EDT
 				Map<Integer, String> names = new java.util.HashMap<>(itemNames);
+				List<Dismissal> dis = new ArrayList<>(dismissalsView());
 				FlipGoblinPanel target = panel;
 				if (target != null)
 				{
-					SwingUtilities.invokeLater(() -> target.update(copy, names));
+					SwingUtilities.invokeLater(() -> target.update(copy, dis, names));
 				}
 				SyncClient s = sync;
 				if (s != null)
@@ -1201,12 +1422,12 @@ public class FlipGoblinPlugin extends Plugin
 			});
 		pushPositionsToPanel();
 		recomputeAssets();
-		// Every event moves the baseline (fills AND first-sightings/clears) — mirror it to the profile so
+		// Every event moves the baseline (fills AND first-sightings/clears); mirror it to the profile so
 		// the next login recovers offline fills from exactly what this session last saw.
 		configManager.setRSProfileConfiguration(CONFIG_GROUP, BASELINE_KEY, gson.toJson(differ.snapshotBaseline()));
 	}
 
-	// --- overlay reads (client thread only, same thread as all mutation — no sync needed) ---------------
+	// --- overlay reads (client thread only, same thread as all mutation, so no sync needed) -------------
 
 	List<GePositions.Position> overlayPositions()
 	{
@@ -1230,7 +1451,7 @@ public class FlipGoblinPlugin extends Plugin
 		return !config.apiToken().trim().isEmpty();
 	}
 
-	/** Linked AND not lapse-locked — the gate every network feature runs behind. */
+	/** Linked AND not lapse-locked: the gate every network feature runs behind. */
 	boolean isOperational()
 	{
 		return isLinked() && !characterLocked;
@@ -1261,7 +1482,7 @@ public class FlipGoblinPlugin extends Plugin
 			SyncClient.LinkCheck check = s.checkLink(API_BASE, token);
 			if (check == SyncClient.LinkCheck.UNREACHABLE)
 			{
-				return; // keep the previous verdict — never flap on a network blip
+				return; // keep the previous verdict; never flap on a network blip
 			}
 			locked = check == SyncClient.LinkCheck.LOCKED;
 		}
@@ -1351,7 +1572,7 @@ public class FlipGoblinPlugin extends Plugin
 			return null;
 		}
 		long realized = 0;
-		for (SessionStats.ItemPosition p : SessionStats.match(recs).items)
+		for (SessionStats.ItemPosition p : SessionStats.match(recs, dismissalsView()).items)
 		{
 			if (p.itemId == itemId)
 			{
@@ -1462,7 +1683,7 @@ public class FlipGoblinPlugin extends Plugin
 			int idx = recs.indexOf(e.getKey());
 			if (idx < 0)
 			{
-				continue; // list was replaced (relog) — the persisted copy keeps its old time
+				continue; // list was replaced (relog); the persisted copy keeps its old time
 			}
 			TradeRecord r = e.getKey();
 			recs.set(idx, new TradeRecord(r.itemId, r.side, r.price, r.quantity, r.spent,
@@ -1475,13 +1696,14 @@ public class FlipGoblinPlugin extends Plugin
 		}
 		recs.sort(java.util.Comparator.comparingLong((TradeRecord x) -> x.timestamp));
 		saveRecords();
-		sessionRealized = SessionStats.match(recs).totalRealized;
+		sessionRealized = SessionStats.match(recs, dismissalsView()).totalRealized;
 		List<TradeRecord> copy = new ArrayList<>(recs);
 		Map<Integer, String> names = new java.util.HashMap<>(itemNames);
+		List<Dismissal> dis = new ArrayList<>(dismissalsView());
 		FlipGoblinPanel target = panel;
 		if (target != null)
 		{
-			SwingUtilities.invokeLater(() -> target.update(copy, names));
+			SwingUtilities.invokeLater(() -> target.update(copy, dis, names));
 		}
 		log.info("[{}] refined {} fill time(s) from the trade feed", BUILD, applied);
 	}
@@ -1514,7 +1736,7 @@ public class FlipGoblinPlugin extends Plugin
 		return buy == null && sell == null ? null : new TradeRecord[]{buy, sell};
 	}
 
-	/** The GE index screen's 8 slot cards, slot-ordered — hover → live-offer mapping + price tags. */
+	/** The GE index screen's 8 slot cards, slot-ordered (hover → live-offer mapping + price tags). */
 	static final int[] GE_INDEX_SLOTS = {
 		net.runelite.api.gameval.InterfaceID.GeOffers.INDEX_0,
 		net.runelite.api.gameval.InterfaceID.GeOffers.INDEX_1,
@@ -1582,17 +1804,18 @@ public class FlipGoblinPlugin extends Plugin
 		}
 		records.addAll(importedRecs);
 		saveRecords();
-		sessionRealized = SessionStats.match(records).totalRealized;
+		sessionRealized = SessionStats.match(records, dismissalsView()).totalRealized;
 		for (TradeRecord r : records)
 		{
 			itemNames.computeIfAbsent(r.itemId, id -> itemManager.getItemComposition(id).getName());
 		}
 		List<TradeRecord> copy = new ArrayList<>(records);
 		Map<Integer, String> names = new java.util.HashMap<>(itemNames);
+		List<Dismissal> dis = new ArrayList<>(dismissalsView());
 		FlipGoblinPanel target = panel;
 		if (target != null)
 		{
-			SwingUtilities.invokeLater(() -> target.update(copy, names));
+			SwingUtilities.invokeLater(() -> target.update(copy, dis, names));
 		}
 		log.info("[{}] GE history: imported {} cost-basis records", BUILD, importedRecs.size());
 		executor.submit(() -> refineImports(importedRecs)); // date them from the trade feed
@@ -1603,9 +1826,9 @@ public class FlipGoblinPlugin extends Plugin
 	 * item-prices pattern: per-frame, read the LAST menu entry (what the cursor is on),
 	 * canonicalize (noted → tradeable id), tooltip. With the GE open (always on) the gate is the
 	 * GE window + its side inventory; outside the GE the inventoryHover toggle extends it to the
-	 * inventory (standalone or bank-side — the bank widget swaps the inventory's interface id).
+	 * inventory (standalone or bank-side; the bank widget swaps the inventory's interface id).
 	 * Widgets without an item id of their own fall back to the index-slot mapping, so hovering a
-	 * locked buy/sell slot reads out that offer's item too. Untradeables are skipped — the price
+	 * locked buy/sell slot reads out that offer's item too. Untradeables are skipped: the price
 	 * API has nothing for them, and a null-parse never caches, so they'd refetch every frame.
 	 */
 	@Subscribe
@@ -1667,7 +1890,7 @@ public class FlipGoblinPlugin extends Plugin
 			}
 		}
 		// Own TooltipComponent (not the string form) so the background can be darker than
-		// RuneLite's default brown — same darkness as the GE panels,
+		// RuneLite's default brown, same darkness as the GE panels,
 		// at the user's configured opacity.
 		net.runelite.client.ui.overlay.components.TooltipComponent tip =
 			new net.runelite.client.ui.overlay.components.TooltipComponent();
@@ -1688,7 +1911,7 @@ public class FlipGoblinPlugin extends Plugin
 			SwingUtilities.invokeLater(pn::refreshSettings);
 		}
 		// The config page's "→ Open FlipGoblin settings" pseudo-button: EVERY toggle of the box
-		// (tick or untick) opens the panel on its Settings tab. No write-back — nothing else
+		// (tick or untick) opens the panel on its Settings tab. No write-back: nothing else
 		// reads the value, and resetting it isn't repainted by the open config page anyway.
 		if (CONFIG_GROUP.equals(event.getGroup()) && "openPanel".equals(event.getKey()))
 		{
@@ -1716,11 +1939,11 @@ public class FlipGoblinPlugin extends Plugin
 		}
 		// Per-character token memory: a paste while logged in writes
 		// through to THIS character's profile store; clearing the field unlinks this character.
-		// While logged out the paste stays in the field only — the next character to log in
+		// While logged out the paste stays in the field only; the next character to log in
 		// adopts it (see syncTokenForProfile).
 		if (CONFIG_GROUP.equals(event.getGroup()) && "apiToken".equals(event.getKey()))
 		{
-			// A different token may carry a different lock verdict — re-ask (also clears the
+			// A different token may carry a different lock verdict, so re-ask (also clears the
 			// stale LOCKED state instantly when the token is removed).
 			executor.submit(this::refreshLockStatus);
 		}
@@ -1748,7 +1971,7 @@ public class FlipGoblinPlugin extends Plugin
 	 * Per-character token memory, login half. The visible config field always shows the CURRENT
 	 * character's token: a stored profile token mirrors into the field; a non-empty field with no
 	 * profile entry is a fresh paste that this character ADOPTS; a field
-	 * still mirroring ANOTHER character's token clears instead — each character links its own.
+	 * still mirroring ANOTHER character's token clears instead; each character links its own.
 	 * Client thread (LOGGED_IN).
 	 */
 	private void syncTokenForProfile()
@@ -1817,9 +2040,13 @@ public class FlipGoblinPlugin extends Plugin
 		{
 			s.flushCrowd(base, token);
 		}
+		if (s.dismissalPendingCount() > 0)
+		{
+			s.flushDismissals(base, token, rsn);
+		}
 	}
 
-	/** Refresh website targets (executor) — inert until the account link is configured.
+	/** Refresh website targets (executor); inert until the account link is configured.
 	 *  Doubles as the lapse-lock heartbeat (every 5 min): re-verdicts before deciding to fetch. */
 	private void refreshTargetsIfLinked()
 	{

@@ -6,6 +6,7 @@ import java.awt.Component;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Graphics;
+import java.awt.Point;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.text.SimpleDateFormat;
@@ -16,16 +17,20 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.IntConsumer;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.JSlider;
+import javax.swing.JToolTip;
 import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.MatteBorder;
 import net.runelite.client.config.ConfigManager;
@@ -56,6 +61,8 @@ public final class FlipGoblinPanel extends PluginPanel
 	private static final Color CARD_BG = ColorScheme.DARKER_GRAY_COLOR;
 	/** Progress-bar track color, between CARD_BG and the muted grays so 0% still reads. */
 	private static final Color BAR_TRACK = new Color(55, 55, 55);
+	/** Ignore button red, darker than the P/L colors. */
+	private static final Color IGNORE_RED = new Color(140, 40, 40);
 	// RuneLite item sprites are 36x32 with the quantity overlay in the top-left corner.
 	// Any smaller label clips the overlay digits.
 	private static final int ICON_W = 36;
@@ -71,7 +78,14 @@ public final class FlipGoblinPanel extends PluginPanel
 	// "All characters" scope: the picker writes through to config (panelScopeAll);
 	// the plugin pushes the other linked characters' summed contribution via setOtherCharacters.
 	private final JComboBox<String> scopeCombo =
-		new JComboBox<>(new String[]{"This character", "All characters"});
+		new JComboBox<String>(new String[]{"This character", "All characters"})
+		{
+			@Override
+			public Point getToolTipLocation(MouseEvent e)
+			{
+				return tipLocation(this, e);
+			}
+		};
 	private CharacterLedger.Totals others;
 	private final JLabel assetsValue = value("open your bank", MUTED);
 	/** The second assets line (bank age or refresh hint). One string per line, so nothing collides. */
@@ -82,9 +96,18 @@ public final class FlipGoblinPanel extends PluginPanel
 	// Settings tab. Controls write through ConfigManager, refreshSettings() syncs them
 	// back, and the guard stops a programmatic sync from echoing writes.
 	private final JLabel settingsLinkValue = value("not linked", MUTED);
-	private final JPasswordField tokenField = new JPasswordField();
-	private final JCheckBox invHoverBox = new JCheckBox("Inventory hover tooltip");
-	private final JCheckBox topGraphBox = new JCheckBox("Show top GE graph");
+	private final JPasswordField tokenField = new JPasswordField()
+	{
+		@Override
+		public Point getToolTipLocation(MouseEvent e)
+		{
+			return tipLocation(this, e);
+		}
+	};
+	private final JCheckBox invHoverBox = new TipCheckBox("Inventory hover tooltip");
+	private final JCheckBox topGraphBox = new TipCheckBox("Show top GE graph");
+	private final JCheckBox hideUntrackedBox = new TipCheckBox("Hide untracked sales");
+	private final JCheckBox hideIgnoredBox = new TipCheckBox("Hide ignored items");
 	private final JSlider opacitySlider = new JSlider(0, 100, 55);
 	private boolean refreshingSettings;
 	// Kept as fields so the config page's open-settings clicker can land on the Settings tab.
@@ -104,10 +127,14 @@ public final class FlipGoblinPanel extends PluginPanel
 	private final JComboBox<FlipGoblinConfig.Timeframe> bottomGraphCombo =
 		new JComboBox<>(FlipGoblinConfig.Timeframe.values());
 	private final JPanel topGraphRow;
-	/** Item ids whose card the user collapsed. Survives the wholesale rebuilds within a session. */
-	private final Set<Integer> collapsed = new HashSet<>();
+	/** Item ids whose card the user opened. Cards start closed; this survives rebuilds. */
+	private final Set<Integer> expanded = new HashSet<>();
 
 	private List<TradeRecord> records = Collections.emptyList();
+	private List<Dismissal> dismissals = Collections.emptyList();
+	/** Card Ignore / Undo clicks, handled by the plugin. */
+	private IntConsumer onIgnore = itemId -> {};
+	private IntConsumer onUndoIgnore = itemId -> {};
 	private List<GePositions.Position> positions = Collections.emptyList();
 	private final Map<Integer, String> names = new HashMap<>();
 
@@ -124,8 +151,8 @@ public final class FlipGoblinPanel extends PluginPanel
 		JPanel stats = card();
 		scopeCombo.setFont(FontManager.getRunescapeSmallFont());
 		scopeCombo.setFocusable(false);
-		scopeCombo.setToolTipText("All characters: P/L and assets sum every linked character — "
-			+ "others counted from their locally stored 7-day history and last bank photo");
+		scopeCombo.setToolTipText(tip("All characters: P/L and assets sum every linked character ("
+			+ "others counted from their locally stored 7-day history and last bank photo)"));
 		scopeCombo.addActionListener(e ->
 		{
 			if (!refreshingSettings)
@@ -148,8 +175,8 @@ public final class FlipGoblinPanel extends PluginPanel
 		assetsDetailRow.setVisible(false);
 		stats.add(assetsDetailRow);
 		stats.add(separator());
-		linkValue.setToolTipText("One token per character — link it in the Settings tab above. "
-			+ "Guide: flipgoblin.com/plugin");
+		linkValue.setToolTipText(tip("One token per character. Link it in the Settings tab above. "
+			+ "Guide: flipgoblin.com/plugin"));
 		stats.add(kvRow("Account", linkValue));
 
 		cards.setLayout(new BoxLayout(cards, BoxLayout.Y_AXIS));
@@ -178,11 +205,11 @@ public final class FlipGoblinPanel extends PluginPanel
 		add(display, BorderLayout.CENTER);
 
 		// The easy report channel: one click to the site's feedback form. Works logged out.
-		JLabel feedback = new JLabel("<html><u>Report a bug / request a feature</u></html>");
+		JLabel feedback = new TipLabel("<html><u>Report a bug / request a feature</u></html>");
 		feedback.setFont(FontManager.getRunescapeSmallFont());
 		feedback.setForeground(MUTED);
 		feedback.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
-		feedback.setToolTipText("Opens Flip Goblin's feedback form in your browser");
+		feedback.setToolTipText(tip("Opens Flip Goblin's feedback form in your browser"));
 		feedback.addMouseListener(new java.awt.event.MouseAdapter()
 		{
 			@Override
@@ -210,8 +237,8 @@ public final class FlipGoblinPanel extends PluginPanel
 		JPanel account = card();
 		account.add(kvRow("Account", settingsLinkValue));
 		tokenField.setFont(FontManager.getRunescapeSmallFont());
-		tokenField.setToolTipText("Paste a token from Flip Goblin's website Settings while logged in "
-			+ "on the character you want to link");
+		tokenField.setToolTipText(tip("Paste a token from Flip Goblin's website Settings while logged in "
+			+ "on the character you want to link"));
 		JPanel tokenRow = new JPanel(new BorderLayout(6, 0));
 		tokenRow.setOpaque(false);
 		tokenRow.setBorder(new EmptyBorder(2, 0, 2, 0));
@@ -237,7 +264,7 @@ public final class FlipGoblinPanel extends PluginPanel
 		buttons.add(linkBtn, BorderLayout.CENTER);
 		buttons.add(unlinkBtn, BorderLayout.EAST);
 		account.add(buttons);
-		JLabel guide = new JLabel("<html><div style='width:180px'><u>One token per character — "
+		JLabel guide = new JLabel("<html><div style='width:150px'><u>One token per character: "
 			+ "generate on the website, paste while logged in on that character. Click for the "
 			+ "guide.</u></div></html>");
 		guide.setFont(FontManager.getRunescapeSmallFont());
@@ -252,7 +279,7 @@ public final class FlipGoblinPanel extends PluginPanel
 			}
 		});
 		account.add(guide);
-		JLabel disclosure = new JLabel("<html><div style='width:180px'>While linked: live market "
+		JLabel disclosure = new JLabel("<html><div style='width:150px'>While linked: live market "
 			+ "data for items you view; your GE fills + bank snapshot sync to YOUR dashboard; your "
 			+ "fills feed the shared price stream (aggregates only, never your GE slot). Unlinked: "
 			+ "zero network calls.</div></html>");
@@ -275,10 +302,16 @@ public final class FlipGoblinPanel extends PluginPanel
 		charactersCard.add(charactersRows);
 
 		JPanel displayCard = card();
-		invHoverBox.setToolTipText("Market tooltip when hovering inventory items outside the GE");
+		invHoverBox.setToolTipText(tip("Market tooltip when hovering inventory items outside the GE"));
 		displayCard.add(checkboxRow(invHoverBox, "inventoryHover"));
-		topGraphBox.setToolTipText("A second graph above the GE window");
+		topGraphBox.setToolTipText(tip("A second graph above the GE window"));
 		displayCard.add(checkboxRow(topGraphBox, "geShowTopGraph"));
+		hideUntrackedBox.setToolTipText(tip("Session items leaves out items with only untracked sales (no tracked buy, "
+			+ "so no profit is counted). Items with a flip always show; the fills list keeps every sale"));
+		displayCard.add(checkboxRow(hideUntrackedBox, "hideUntrackedSales"));
+		hideIgnoredBox.setToolTipText(tip("Session items leaves out items you only ignored (no flip, nothing still "
+			+ "open). Items with a flip always show; untick to see them and their Undo Ignore button"));
+		displayCard.add(checkboxRow(hideIgnoredBox, "hideIgnored"));
 		displayCard.add(topGraphRow);
 		displayCard.add(comboRow("Bottom graph", bottomGraphCombo, "geBottomGraph"));
 		JPanel opacityRow = new JPanel(new BorderLayout(6, 0));
@@ -370,6 +403,8 @@ public final class FlipGoblinPanel extends PluginPanel
 			}
 			invHoverBox.setSelected(config.inventoryHover());
 			topGraphBox.setSelected(config.geShowTopGraph());
+			hideUntrackedBox.setSelected(config.hideUntrackedSales());
+			hideIgnoredBox.setSelected(config.hideIgnored());
 			if (opacitySlider.getValue() != config.gePanelOpacity())
 			{
 				opacitySlider.setValue(config.gePanelOpacity());
@@ -391,7 +426,7 @@ public final class FlipGoblinPanel extends PluginPanel
 		List<LinkedCharacters.Row> rows = LinkedCharacters.list(configManager);
 		if (rows.isEmpty())
 		{
-			JLabel none = new JLabel("<html><div style='width:180px'>None yet — paste a token above "
+			JLabel none = new JLabel("<html><div style='width:150px'>None yet. Paste a token above "
 				+ "while logged in on a character to link it.</div></html>");
 			none.setFont(FontManager.getRunescapeSmallFont());
 			none.setForeground(MUTED);
@@ -415,31 +450,31 @@ public final class FlipGoblinPanel extends PluginPanel
 		row.setBorder(new EmptyBorder(3, 0, 3, 0));
 		row.setAlignmentX(Component.LEFT_ALIGNMENT);
 		boolean lockedRow = r.current && characterLockedNow;
-		JLabel name = new JLabel(lockedRow ? r.name + " (locked)" : r.name);
+		JLabel name = new TipLabel(lockedRow ? r.name + " (locked)" : r.name);
 		name.setFont(FontManager.getRunescapeSmallFont());
 		name.setForeground(lockedRow ? LOSS : r.current ? PROFIT : Color.WHITE);
-		name.setToolTipText(lockedRow
-			? "Another linked character holds the active slot — syncing and market data are "
+		name.setToolTipText(tip(lockedRow
+			? "Another linked character holds the active slot. Syncing and market data are "
 				+ "paused for this character until you unlink the other on the website"
 			: r.current
-				? "Logged in now — this character's token drives the syncs"
-				: "Linked; its token activates automatically when this character logs in");
+				? "Logged in now: this character's token drives the syncs"
+				: "Linked; its token activates automatically when this character logs in"));
 		row.add(name, BorderLayout.CENTER);
 		JPanel east = new JPanel(new BorderLayout(6, 0));
 		east.setOpaque(false);
-		JLabel tail = new JLabel(r.tokenTail);
+		JLabel tail = new TipLabel(r.tokenTail);
 		tail.setFont(FontManager.getRunescapeSmallFont());
 		tail.setForeground(MUTED);
-		tail.setToolTipText("Token ending — match it against the list on the website's Settings page");
+		tail.setToolTipText(tip("Token ending. Match it against the list on the website's Settings page"));
 		east.add(tail, BorderLayout.CENTER);
 		boolean confirming = r.profileKey.equals(confirmingUnlinkKey);
-		JButton unlink = new JButton(confirming ? "Sure?" : "Unlink");
+		JButton unlink = new TipButton(confirming ? "Sure?" : "Unlink");
 		unlink.setFont(FontManager.getRunescapeSmallFont());
 		unlink.setFocusable(false);
-		unlink.setToolTipText(confirming
+		unlink.setToolTipText(tip(confirming
 			? "Click again to remove this character's token from the plugin"
-			: "Remove this character's token from the plugin (the token itself stays valid — "
-				+ "revoke it on the website to kill it everywhere)");
+			: "Remove this character's token from the plugin (the token itself stays valid; "
+				+ "revoke it on the website to kill it everywhere)"));
 		if (confirming)
 		{
 			unlink.setForeground(LOSS);
@@ -530,7 +565,7 @@ public final class FlipGoblinPanel extends PluginPanel
 			// Lapse lock: the server refuses this character. Say so loudly.
 			text = character == null || character.isEmpty() ? "LOCKED" : "LOCKED · " + character;
 			color = LOSS;
-			tip = "This character is past the free one-character limit — syncing and market data "
+			tip = "This character is past the free one-character limit. Syncing and market data "
 				+ "are paused. Unlink other characters on the website's Settings, or go Premium.";
 		}
 		else if (linked)
@@ -545,18 +580,26 @@ public final class FlipGoblinPanel extends PluginPanel
 		}
 		linkValue.setText(text);
 		linkValue.setForeground(color);
-		linkValue.setToolTipText(tip != null ? tip
-			: "One token per character — link it in the Settings tab above. "
-				+ "Guide: flipgoblin.com/plugin");
+		linkValue.setToolTipText(tip(tip != null ? tip
+			: "One token per character. Link it in the Settings tab above. "
+				+ "Guide: flipgoblin.com/plugin"));
 		settingsLinkValue.setText(text);
 		settingsLinkValue.setForeground(color);
-		settingsLinkValue.setToolTipText(tip);
+		settingsLinkValue.setToolTipText(tip(tip));
 		rebuildCharacterRows(); // the current row's lock marker follows
 	}
 
-	public void update(List<TradeRecord> records, Map<Integer, String> itemNames)
+	/** Sets the item cards' Ignore and Undo handlers. */
+	public void setIgnoreHandlers(IntConsumer onIgnore, IntConsumer onUndoIgnore)
+	{
+		this.onIgnore = onIgnore;
+		this.onUndoIgnore = onUndoIgnore;
+	}
+
+	public void update(List<TradeRecord> records, List<Dismissal> dismissals, Map<Integer, String> itemNames)
 	{
 		this.records = records;
+		this.dismissals = dismissals;
 		this.names.putAll(itemNames);
 		render();
 	}
@@ -571,7 +614,7 @@ public final class FlipGoblinPanel extends PluginPanel
 
 	private void render()
 	{
-		SessionStats.Result stats = SessionStats.match(records);
+		SessionStats.Result stats = SessionStats.match(records, dismissals);
 		// All-characters scope: the other characters' realized P/L, matched per character
 		// and never merged into one FIFO, adds on top of the live character's. The label
 		// and tooltip say exactly what is summed.
@@ -579,9 +622,9 @@ public final class FlipGoblinPanel extends PluginPanel
 		boolean allScope = config.panelScopeAll() && oc != null && oc.characters > 0;
 		long realized = stats.totalRealized + (allScope ? oc.realized7d : 0);
 		plKey.setText(allScope ? "P/L (7d) · all" : "P/L (7d)");
-		totalValue.setToolTipText(allScope
+		totalValue.setToolTipText(tip(allScope
 			? "This character + " + oc.characters + " other linked: " + oc.names
-			: null);
+			: null));
 		totalValue.setText(gp(realized));
 		totalValue.setForeground(realized > 0 ? PROFIT : realized < 0 ? LOSS : MUTED);
 
@@ -613,16 +656,23 @@ public final class FlipGoblinPanel extends PluginPanel
 
 		if (!records.isEmpty())
 		{
-			// Newest fill per item for the card's "last" row.
-			Map<Integer, TradeRecord> lastFill = new HashMap<>();
-			for (TradeRecord r : records)
+			// Items with an Ignore on record get the Undo button.
+			Set<Integer> ignoredItems = new HashSet<>();
+			for (Dismissal d : dismissals)
 			{
-				lastFill.put(r.itemId, r);
+				ignoredItems.add(d.itemId);
 			}
 			cards.add(sectionLabel("Session items"));
+			boolean hideUntracked = config.hideUntrackedSales();
+			boolean hideIgnored = config.hideIgnored();
 			for (SessionStats.ItemPosition p : stats.items)
 			{
-				cards.add(itemCard(p, lastFill.get(p.itemId)));
+				// Flips and open units always show.
+				if (SessionStats.hiddenCard(p, hideUntracked, hideIgnored))
+				{
+					continue;
+				}
+				cards.add(itemCard(p, ignoredItems.contains(p.itemId)));
 				cards.add(Box.createVerticalStrut(6));
 			}
 
@@ -649,7 +699,7 @@ public final class FlipGoblinPanel extends PluginPanel
 
 		JLabel icon = new JLabel();
 		icon.setPreferredSize(new Dimension(ICON_W, ICON_H));
-		// Quantity-aware sprite (113 arrows must not draw the single-arrow variant) — the
+		// Quantity-aware sprite (113 arrows must not draw the single-arrow variant); the
 		// stackable flag doubles as the quantity overlay for non-stacking items, RuneLite's idiom.
 		itemManager.getImage(p.itemId, p.totalQuantity, p.totalQuantity > 1).addTo(icon);
 		row.add(icon, BorderLayout.WEST);
@@ -713,7 +763,7 @@ public final class FlipGoblinPanel extends PluginPanel
 	}
 
 	/** One item's card: icon | name | colored P/L header over collapsible key/value rows. */
-	private JPanel itemCard(SessionStats.ItemPosition p, TradeRecord last)
+	private JPanel itemCard(SessionStats.ItemPosition p, boolean hasIgnore)
 	{
 		JPanel card = card();
 
@@ -741,18 +791,20 @@ public final class FlipGoblinPanel extends PluginPanel
 		{
 			info.add(kvRow("Untracked sold", value(Long.toString(p.unmatchedSellQty), MUTED)));
 		}
-		if (last != null)
+		info.add(kvRow("Bought", sideValue(p.boughtQty, p.boughtValue, p.boughtMinPrice, p.boughtMaxPrice)));
+		info.add(kvRow("Sold", sideValue(p.soldQty, p.soldValue, p.soldMinPrice, p.soldMaxPrice)));
+		if (p.ignoredQty > 0)
 		{
-			// Value and timestamp on separate lines — the combined string is wider than the panel.
-			info.add(kvRow("Last fill", value(
-				(last.side == TradeRecord.Side.BUY ? "buy @ " : "sell @ ") + Gp.exact(last.price), PRICE)));
-			info.add(kvRow("", value(
-				HHMM.format(new Date(last.timestamp)) + (last.recovered ? " (offline)" : ""), MUTED)));
+			info.add(kvRow("Ignored", value(Gp.exact(p.ignoredQty), MUTED)));
 		}
-		info.setVisible(!collapsed.contains(p.itemId));
+		if (p.openQty > 0 || hasIgnore)
+		{
+			info.add(ignoreActions(p, hasIgnore));
+		}
+		info.setVisible(expanded.contains(p.itemId));
 		card.add(info);
 
-		// Flipping-panel idiom: clicking the header folds the card's info away (persists per item).
+		// Flipping-panel idiom: clicking the header opens or closes the card's info (persists per item).
 		// Attached to the header too (not just the name) so the whole strip is a click target; Swing
 		// dispatches to the deepest component, so the two listeners never double-fire.
 		MouseAdapter toggle = new MouseAdapter()
@@ -760,15 +812,15 @@ public final class FlipGoblinPanel extends PluginPanel
 			@Override
 			public void mouseClicked(MouseEvent e)
 			{
-				boolean nowCollapsed = info.isVisible();
-				info.setVisible(!nowCollapsed);
-				if (nowCollapsed)
+				boolean open = !info.isVisible();
+				info.setVisible(open);
+				if (open)
 				{
-					collapsed.add(p.itemId);
+					expanded.add(p.itemId);
 				}
 				else
 				{
-					collapsed.remove(p.itemId);
+					expanded.remove(p.itemId);
 				}
 				cards.revalidate();
 			}
@@ -778,6 +830,54 @@ public final class FlipGoblinPanel extends PluginPanel
 		header.addMouseListener(toggle);
 		nameLabel.addMouseListener(toggle);
 		return card;
+	}
+
+	/** "1,000 @ 944", or "1,000 @ ~950" (average, range in the tooltip) when prices varied. */
+	private static JLabel sideValue(long qty, long value, long minPrice, long maxPrice)
+	{
+		if (qty <= 0)
+		{
+			return value("—", MUTED);
+		}
+		if (minPrice == maxPrice)
+		{
+			return value(Gp.exact(qty) + " @ " + Gp.exact(minPrice), PRICE);
+		}
+		JLabel label = value(Gp.exact(qty) + " @ ~" + Gp.exact(Math.round((double) value / qty)), PRICE);
+		label.setToolTipText(tip("Average price (fills ranged " + Gp.exact(minPrice) + " to " + Gp.exact(maxPrice) + " gp)"));
+		return label;
+	}
+
+	/** Card buttons: Ignore while units are open, Undo once the item has an Ignore. */
+	private JPanel ignoreActions(SessionStats.ItemPosition p, boolean hasIgnore)
+	{
+		JPanel row = new JPanel(new BorderLayout(6, 0));
+		row.setOpaque(false);
+		row.setBorder(new EmptyBorder(4, 0, 0, 0));
+		row.setAlignmentX(Component.LEFT_ALIGNMENT);
+		if (hasIgnore)
+		{
+			JButton undo = new TipButton("Undo Ignore");
+			undo.setFont(FontManager.getRunescapeSmallFont());
+			undo.setFocusable(false);
+			undo.setToolTipText(tip("Count the last ignored units as an open flip again"));
+			undo.addActionListener(e -> onUndoIgnore.accept(p.itemId));
+			row.add(undo, BorderLayout.WEST);
+		}
+		if (p.openQty > 0)
+		{
+			JButton ignore = new TipButton("Ignore");
+			ignore.setFont(FontManager.getRunescapeSmallFont());
+			ignore.setFocusable(false);
+			ignore.setForeground(Color.WHITE);
+			ignore.setBackground(IGNORE_RED);
+			ignore.setToolTipText(tip("Not a flip: move these " + Gp.exact(p.openQty)
+				+ " open units to general purchases (same as the website dashboard)"));
+			ignore.addActionListener(e -> onIgnore.accept(p.itemId));
+			row.add(ignore, BorderLayout.EAST);
+		}
+		row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
+		return row;
 	}
 
 	/** One fill as a compact two-line row: icon | "Buy 100 Lobster" / "@ 200 gp · 14:32 (offline)". */
@@ -815,7 +915,19 @@ public final class FlipGoblinPanel extends PluginPanel
 
 	private static JPanel card()
 	{
-		JPanel card = new JPanel();
+		// BoxLayout offsets and squeezes rows whose alignmentX differs, so every row is left-aligned.
+		JPanel card = new JPanel()
+		{
+			@Override
+			protected void addImpl(Component comp, Object constraints, int index)
+			{
+				if (comp instanceof JComponent)
+				{
+					((JComponent) comp).setAlignmentX(Component.LEFT_ALIGNMENT);
+				}
+				super.addImpl(comp, constraints, index);
+			}
+		};
 		card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
 		card.setBackground(CARD_BG);
 		card.setBorder(new EmptyBorder(6, 8, 6, 8));
@@ -824,7 +936,7 @@ public final class FlipGoblinPanel extends PluginPanel
 	}
 
 	/**
-	 * Key/value row — description WEST, right-aligned value in CENTER (the flipping-panel
+	 * Key/value row: description WEST, right-aligned value in CENTER (the flipping-panel
 	 * property-row idiom). CENTER, not EAST: BorderLayout paints an oversized EAST child straight
 	 * over WEST, while CENTER gets the leftover width and the label ellipsizes.
 	 */
@@ -845,6 +957,81 @@ public final class FlipGoblinPanel extends PluginPanel
 		return row;
 	}
 
+	/** Wraps a long tooltip into a few short lines. */
+	private static String tip(String text)
+	{
+		if (text == null || text.length() <= 50)
+		{
+			return text;
+		}
+		String safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+		return "<html><div style='width:160px'>" + safe + "</div></html>";
+	}
+
+	/** Below the cursor, moved left if the tooltip would pass the panel's right edge. */
+	private static Point tipLocation(JComponent c, MouseEvent e)
+	{
+		JComponent panel = (JComponent) SwingUtilities.getAncestorOfClass(FlipGoblinPanel.class, c);
+		String text = e == null ? null : c.getToolTipText(e);
+		if (panel == null || text == null)
+		{
+			return null;
+		}
+		JToolTip t = c.createToolTip();
+		t.setTipText(text);
+		int left = SwingUtilities.convertPoint(panel, 0, 0, c).x;
+		int right = SwingUtilities.convertPoint(panel, panel.getWidth(), 0, c).x;
+		int x = Math.max(left, Math.min(e.getX(), right - t.getPreferredSize().width));
+		return new Point(x, e.getY() + 20);
+	}
+
+	private static final class TipLabel extends JLabel
+	{
+		TipLabel(String text)
+		{
+			super(text);
+		}
+
+		TipLabel(String text, int horizontalAlignment)
+		{
+			super(text, horizontalAlignment);
+		}
+
+		@Override
+		public Point getToolTipLocation(MouseEvent e)
+		{
+			return tipLocation(this, e);
+		}
+	}
+
+	private static final class TipCheckBox extends JCheckBox
+	{
+		TipCheckBox(String text)
+		{
+			super(text);
+		}
+
+		@Override
+		public Point getToolTipLocation(MouseEvent e)
+		{
+			return tipLocation(this, e);
+		}
+	}
+
+	private static final class TipButton extends JButton
+	{
+		TipButton(String text)
+		{
+			super(text);
+		}
+
+		@Override
+		public Point getToolTipLocation(MouseEvent e)
+		{
+			return tipLocation(this, e);
+		}
+	}
+
 	private static JLabel keyLabel(String text)
 	{
 		JLabel k = new JLabel(text);
@@ -855,7 +1042,7 @@ public final class FlipGoblinPanel extends PluginPanel
 
 	private static JLabel value(String text, Color color)
 	{
-		JLabel l = new JLabel(text, SwingConstants.RIGHT);
+		JLabel l = new TipLabel(text, SwingConstants.RIGHT);
 		l.setFont(FontManager.getRunescapeSmallFont());
 		l.setForeground(color);
 		return l;
@@ -892,14 +1079,14 @@ public final class FlipGoblinPanel extends PluginPanel
 	 * headline is the DASHBOARD-PARITY estimated total (coins + stacks at live bid net of tax);
 	 * estTotal < 0 = no bulk prices yet (unlinked / first fetch), which
 	 * falls back to the raw stacks·coins line. `bankFresh` = captured THIS session; `bankTrusted`
-	 * = the bank COUNTS in the estimate (fresh, or the custody chain is ACQUITTED-unbroken) —
-	 * the split keeps the bank-age display honest when trust comes from custody, not a re-open.
+	 * = the bank COUNTS in the estimate (fresh, or the custody chain is ACQUITTED-unbroken).
+	 * The split keeps the bank-age display honest when trust comes from custody, not a re-open.
 	 * EDT-only.
 	 */
 	public void updateAssets(AssetSnapshot composite, long bankTimestamp, boolean bankFresh,
 		boolean bankTrusted, long estTotal, long unpriced)
 	{
-		// All-characters scope (display only — the plugin's sync payload stays per-character):
+		// All-characters scope (display only; the plugin's sync payload stays per-character):
 		// add the other linked characters' bank-photo values when both sides are priceable.
 		CharacterLedger.Totals oc = others;
 		boolean allScope = config.panelScopeAll() && oc != null && oc.characters > 0
@@ -937,9 +1124,9 @@ public final class FlipGoblinPanel extends PluginPanel
 		{
 			// Custody: an untrusted bank is EXCLUDED from the
 			// estimate (the caller hands us the partial composite), so label the number for what
-			// it is. Trusted-but-not-fresh = the ACQUITTED chain — full number, honest bank age.
+			// it is. Trusted-but-not-fresh = the ACQUITTED chain: full number, honest bank age.
 			assetsValue.setText((bankTrusted ? "≈ " : "inv+GE ≈ ") + gp(estTotal));
-			// Coins are inside the total — the detail stays short so it never clips the row.
+			// Coins are inside the total, so the detail stays short and never clips the row.
 			detailPart = String.format("%d stacks%s · %s", composite.totalStacks(),
 				unpriced > 0 ? " · " + unpriced + " unpriced" : "", bankPart)
 				+ (allScope ? " · +" + oc.characters + " alt" + (oc.characters > 1 ? "s" : "") : "");
@@ -956,19 +1143,19 @@ public final class FlipGoblinPanel extends PluginPanel
 			? (bankTrusted
 				? "Estimated sell-now value after GE tax (bank + inventory + equipment + GE offers)"
 					+ (bankFresh ? ""
-						: " — the bank part is the stored photo, provably untouched since your "
+						: ". The bank part is the stored photo, provably untouched since your "
 							+ "last session (login custody acquitted)")
-				: "Inventory + equipment + GE only — the bank hasn't been witnessed this session, "
+				: "Inventory + equipment + GE only. The bank hasn't been witnessed this session, "
 					+ "so it isn't counted. Open your bank for the full net worth.")
 			: "Bank + inventory + equipment + GE offers")
-			+ (bankTrusted || estTotal >= 0 ? "" : " — open your bank to refresh the bank part")
+			+ (bankTrusted || estTotal >= 0 ? "" : ". Open your bank to refresh the bank part")
 			+ (allScope
 				? ". Includes " + oc.characters + " other linked character"
 					+ (oc.characters > 1 ? "s" : "") + " from their last bank photo (banks only): "
 					+ oc.names
 				: "");
-		assetsValue.setToolTipText(tip);
-		assetsDetail.setToolTipText(tip);
+		assetsValue.setToolTipText(tip(tip));
+		assetsDetail.setToolTipText(tip(tip));
 		revalidate();
 		repaint();
 	}

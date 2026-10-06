@@ -14,11 +14,11 @@ public class AssetSnapshotTest
 		int[][] bank = {
 			{995, 1_000_000}, // coins
 			{4151, 3},
-			{560, 0}, // bank placeholder (qty 0) — dropped
-			{-1, 5}, // empty slot sentinel — dropped
+			{560, 0}, // bank placeholder (qty 0): dropped
+			{-1, 5}, // empty slot sentinel: dropped
 		};
 		int[][] inventory = {
-			{995, 25_000}, // more coins in the backpack — sums with the bank stack
+			{995, 25_000}, // more coins in the backpack; sums with the bank stack
 			{4151, 1},
 			{2, 100},
 		};
@@ -49,7 +49,7 @@ public class AssetSnapshotTest
 	@Test
 	public void extraCoins_mergeWithContainerCoins_beyondIntRange()
 	{
-		// GE escrow can exceed int max-cash — the long path must survive composition.
+		// GE escrow can exceed int max-cash; the long path must survive composition.
 		long escrow = 3_000_000_000L;
 		AssetSnapshot snap = AssetSnapshot.of(1L, escrow, new int[][]{{995, 500}, {4151, 1}});
 		assertEquals(escrow + 500, snap.coins());
@@ -94,5 +94,16 @@ public class AssetSnapshotTest
 		long[] blind = snap.estimateValue(null);
 		assertEquals(1_000, blind[0]);
 		assertEquals(3, blind[1]);
+	}
+
+	@Test
+	public void platinumTokens_countAsCashAtFaceValue()
+	{
+		// The GE pays out and takes platinum since the Beyond Max Cash update (2026-09-30).
+		AssetSnapshot snap = AssetSnapshot.of(0L, new int[][]{{995, 500}, {13204, 3_000_000}, {1603, 1}});
+		assertEquals(500 + 3_000_000_000L, snap.coins());
+		long[] est = snap.estimateValue(new java.util.HashMap<>());
+		assertEquals(500 + 3_000_000_000L, est[0]);
+		assertEquals(1, est[1]); // only the ruby is unpriced; platinum is never "unpriced"
 	}
 }

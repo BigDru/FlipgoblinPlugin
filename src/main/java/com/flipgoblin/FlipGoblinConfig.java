@@ -7,7 +7,7 @@ import net.runelite.client.config.ConfigItem;
 @ConfigGroup("flipgoblin")
 public interface FlipGoblinConfig extends Config
 {
-	// RuneLite renders each description as an "<html>name:<br>description</html>" tooltip — an
+	// RuneLite renders each description as an "<html>name:<br>description</html>" tooltip. An
 	// unconstrained one lays out as a single line and clips at the screen edge, so every visible
 	// description wraps its text in this width-capped div.
 	String DESC_OPEN = "<div style='width:300px'>";
@@ -28,7 +28,7 @@ public interface FlipGoblinConfig extends Config
 		keyName = "openPanel",
 		name = "→ Open FlipGoblin settings",
 		description = DESC_OPEN
-			+ "All FlipGoblin settings live in the Flip Goblin side panel's Settings tab (account linking, hover tooltips, graphs, opacity). Clicking this box — ticking OR unticking — opens it."
+			+ "All FlipGoblin settings live in the Flip Goblin side panel's Settings tab (account linking, hover tooltips, graphs, opacity). Clicking this box (ticking OR unticking) opens it."
 			+ DESC_CLOSE
 	)
 	default boolean openPanel()
@@ -41,7 +41,7 @@ public interface FlipGoblinConfig extends Config
 		keyName = "apiToken",
 		name = "Account token",
 		description = DESC_OPEN
-			+ "Paste the one-time token from your FlipGoblin dashboard (Settings → generate token; free account) to link THE CHARACTER YOU ARE LOGGED IN ON — each character keeps its own token (mint one per character for separate dashboard tracking; this field always shows the current character's). Linking is the plugin's ONE data switch — while a token is set: live market data is fetched for items you view at the GE or hover in your inventory (each request carries the item id and your token, nothing else); your GE fills (item, buy/sell, price, quantity, time, GE slot) sync to YOUR dashboard; those same fills (minus slot) feed FlipGoblin's shared price stream, where only blended aggregates from many contributors are ever shown; your asset snapshot (bank, inventory, equipment, GE-held items, coins) syncs to YOUR account; and this character's name rides along purely as a dashboard label. Remove the token to unlink this character — the plugin then works purely locally on it."
+			+ "Paste the one-time token from your FlipGoblin dashboard (Settings → generate token; free account) to link THE CHARACTER YOU ARE LOGGED IN ON. Each character keeps its own token (mint one per character for separate dashboard tracking; this field always shows the current character's). Linking is the plugin's ONE data switch. While a token is set: live market data is fetched for items you view at the GE or hover in your inventory (each request carries the item id and your token, nothing else); your GE fills (item, buy/sell, price, quantity, time, GE slot) and the items you mark Ignore (item, time) sync to YOUR dashboard; those same fills (minus slot) feed FlipGoblin's shared price stream, where only blended aggregates from many contributors are ever shown; your asset snapshot (bank, inventory, equipment, GE-held items, coins) syncs to YOUR account; and this character's name rides along purely as a dashboard label. Remove the token to unlink this character; the plugin then works purely locally on it."
 			+ DESC_CLOSE,
 		secret = true,
 		hidden = true
@@ -56,7 +56,7 @@ public interface FlipGoblinConfig extends Config
 		keyName = "inventoryHover",
 		name = "Inventory hover",
 		description = DESC_OPEN
-			+ "Hovering an inventory item outside the Grand Exchange (banking, skilling) shows the same FlipGoblin market tooltip that GE hovering always shows (ask/bid, after-tax margin, ROI, volume, buy limit). Requires the account token — each price request carries the item id and your token, nothing else."
+			+ "Hovering an inventory item outside the Grand Exchange (banking, skilling) shows the same FlipGoblin market tooltip that GE hovering always shows (ask/bid, after-tax margin, ROI, volume, buy limit). Requires the account token. Each price request carries the item id and your token, nothing else."
 			+ DESC_CLOSE,
 		hidden = true
 	)
@@ -115,7 +115,7 @@ public interface FlipGoblinConfig extends Config
 		return false;
 	}
 
-	// The two timeframe pickers are HIDDEN here — they live in the sidebar panel; only the
+	// The two timeframe pickers are HIDDEN here: they live in the sidebar panel; only the
 	// show-top-graph master toggle stays in this settings page. The keys remain config-backed
 	// so the panel writes through ConfigManager and the values persist.
 	@ConfigItem(
@@ -162,13 +162,41 @@ public interface FlipGoblinConfig extends Config
 		keyName = "panelScopeAll",
 		name = "Panel shows all characters",
 		description = DESC_OPEN
-			+ "Side panel P/L and assets sum EVERY linked character (other characters counted from their locally stored 7-day fill history and last bank photo) instead of just the one logged in. Purely local — nothing extra is sent anywhere."
+			+ "Side panel P/L and assets sum EVERY linked character (other characters counted from their locally stored 7-day fill history and last bank photo) instead of just the one logged in. Purely local: nothing extra is sent anywhere."
 			+ DESC_CLOSE,
 		hidden = true // the picker lives in the side panel's Session tab
 	)
 	default boolean panelScopeAll()
 	{
 		return false;
+	}
+
+	@ConfigItem(
+		position = 10,
+		keyName = "hideUntrackedSales",
+		name = "Hide untracked sales",
+		description = DESC_OPEN
+			+ "Session items leaves out items with only untracked sales: sold without a buy the plugin saw (loot, stock from before tracking), so no profit is counted for them. Items with a flip always show, and the fills list still shows every sale. Display only: nothing is sent anywhere."
+			+ DESC_CLOSE,
+		hidden = true // set in the side panel's Settings tab
+	)
+	default boolean hideUntrackedSales()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		position = 11,
+		keyName = "hideIgnored",
+		name = "Hide ignored items",
+		description = DESC_OPEN
+			+ "Session items leaves out items you only ignored: no flip and nothing still open (for example food you bought and ate). Items with a flip always show. Untick to see them (and their Undo Ignore button). Display only: nothing is sent anywhere."
+			+ DESC_CLOSE,
+		hidden = true // set in the side panel's Settings tab
+	)
+	default boolean hideIgnored()
+	{
+		return true;
 	}
 
 }

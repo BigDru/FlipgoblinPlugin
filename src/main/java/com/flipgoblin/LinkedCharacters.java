@@ -65,7 +65,7 @@ final class LinkedCharacters
 		List<RuneScapeProfile> profiles = cm.getRSProfiles();
 		if (profiles == null)
 		{
-			return rows; // pre-session/harness — nothing enumerable yet
+			return rows; // pre-session/harness: nothing enumerable yet
 		}
 		for (RuneScapeProfile p : profiles)
 		{

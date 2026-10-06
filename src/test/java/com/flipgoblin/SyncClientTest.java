@@ -13,14 +13,14 @@ import org.junit.Test;
 /**
  * Pins the sync wire payload to the API-8 contract (`parseSyncBody` in apps/api/src/flips.ts):
  * {flips: [{itemId, side: "buy"|"sell", price, qty, ts, geSlot?, clientId}]}. If either side renames a
- * field, this test (or the server e2e) goes red — the cross-system contract guard.
+ * field, this test (or the server e2e) goes red. It is the cross-system contract guard.
  */
 public class SyncClientTest
 {
 	@Test
 	public void lockedBodyDistinguishesTheLapseLockFromABadToken()
 	{
-		// The lapse lock rides a 401 whose body names it — anything else is not "locked".
+		// The lapse lock rides a 401 whose body names it; anything else is not "locked".
 		org.junit.Assert.assertTrue(SyncClient.lockedBody(401, "{\"ok\":false,\"error\":\"character locked\"}"));
 		org.junit.Assert.assertFalse(SyncClient.lockedBody(401, "{\"ok\":false,\"error\":\"unauthenticated\"}"));
 		org.junit.Assert.assertFalse(SyncClient.lockedBody(403, "{\"error\":\"character locked\"}"));
@@ -46,7 +46,7 @@ public class SyncClientTest
 		assertEquals(1720000000000L, f0.get("ts").getAsLong());
 		assertEquals(3, f0.get("geSlot").getAsInt());
 		assertEquals(buy.clientId, f0.get("clientId").getAsString());
-		assertEquals(36, f0.get("clientId").getAsString().length()); // UUID — fits the server's 1-64 cap
+		assertEquals(36, f0.get("clientId").getAsString().length()); // UUID: fits the server's 1-64 cap
 
 		assertEquals("sell", flips.get(1).getAsJsonObject().get("side").getAsString());
 		assertFalse(f0.get("clientId").getAsString().equals(
@@ -101,7 +101,7 @@ public class SyncClientTest
 	}
 
 	/**
-	 * PLUG-7: the crowd payload matches parseCrowdBody in apps/api/src/crowd.ts —
+	 * PLUG-7: the crowd payload matches parseCrowdBody in apps/api/src/crowd.ts:
 	 * {events: [{itemId, side, price, quantity, ts(SECONDS), clientId}]} and NEVER the GE slot.
 	 */
 	@Test
@@ -133,5 +133,36 @@ public class SyncClientTest
 		s.enqueueCrowd(recovered);
 		s.enqueueCrowd(live);
 		assertEquals(1, s.crowdPendingCount());
+	}
+
+	@Test
+	public void ignoreBodiesMatchThePluginDismissContract() // mirrors the server's parsePluginDismissBody
+	{
+		Dismissal d = new Dismissal(4151, 1720000000000L);
+		JsonObject ignore = SyncClient.dismissalBody(new SyncClient.DismissalOp(d, false));
+		assertEquals(4151, ignore.get("itemId").getAsInt());
+		assertEquals(1720000000000L, ignore.get("ts").getAsLong());
+		JsonObject undo = SyncClient.dismissalBody(new SyncClient.DismissalOp(d, true));
+		assertEquals(4151, undo.get("itemId").getAsInt());
+		assertFalse(undo.has("ts"));
+	}
+
+	@Test
+	public void undoOfAnUnsentIgnoreCancelsBoth_undoOfASentIgnoreQueuesARestore()
+	{
+		SyncClient s = new SyncClient(null, new Gson());
+		Dismissal queued = new Dismissal(4151, 1L);
+		s.enqueueDismissal(queued);
+		assertEquals(1, s.dismissalPendingCount());
+		s.enqueueRestore(queued);
+		assertEquals(0, s.dismissalPendingCount()); // never sent, so both cancel
+
+		Dismissal alreadySent = new Dismissal(4151, 2L); // not in the queue: flushed earlier
+		s.enqueueRestore(alreadySent);
+		assertEquals(1, s.dismissalPendingCount());
+		// A different ignore of the same item is not the one being undone.
+		s.enqueueDismissal(new Dismissal(4151, 3L));
+		s.enqueueRestore(new Dismissal(4151, 3L));
+		assertEquals(3, s.dismissalPendingCount());
 	}
 }

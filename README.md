@@ -1,4 +1,4 @@
-# Flip Goblin — RuneLite plugin
+# Flip Goblin RuneLite plugin
 
 A Grand Exchange flip tracker for Old School RuneScape. It is informational only. The
 plugin never places, changes, or collects offers for you.

@@ -139,7 +139,7 @@ public class GeOfferDifferTest
 		assertTrue(f.recovered);
 		assertEquals(1000L, f.offlineSince);
 		assertEquals(5000L, f.timestamp);
-		// The NEXT fill on the same slot is live again — never marked recovered.
+		// The NEXT fill on the same slot is live again, never marked recovered.
 		TradeRecord live = d.onOffer(SLOT, snap(100, GrandExchangeOfferState.BUYING, 10, 7, 740), 6000L).get();
 		assertFalse(live.recovered);
 		assertEquals(0L, live.offlineSince);
@@ -165,7 +165,7 @@ public class GeOfferDifferTest
 		Map<Integer, GeOfferDiffer.SlotState> seed = new HashMap<>();
 		seed.put(SLOT, new GeOfferDiffer.SlotState(100, 3, 300, 1000L, TradeRecord.Side.BUY, 10, 100));
 		GeOfferDiffer d = new GeOfferDiffer(seed);
-		// The slot was collected + reused for another item while offline — first sighting only baselines.
+		// The slot was collected + reused for another item while offline; first sighting only baselines.
 		assertFalse(d.onOffer(SLOT, snap(200, GrandExchangeOfferState.SELLING, 5, 2, 400), 5000L).isPresent());
 	}
 
@@ -176,7 +176,7 @@ public class GeOfferDifferTest
 		d.onOffer(SLOT, snap(100, GrandExchangeOfferState.BUYING, 5, 0, 0), 1L);
 		assertEquals(5, d.onOffer(SLOT, snap(100, GrandExchangeOfferState.BUYING, 5, 5, 500), 2L).get().quantity);
 		d.onOffer(SLOT, snap(0, GrandExchangeOfferState.EMPTY, 0, 0, 0), 3L); // collected
-		// A different item now occupies the slot — first sighting only baselines.
+		// A different item now occupies the slot; first sighting only baselines.
 		assertFalse(d.onOffer(SLOT, snap(200, GrandExchangeOfferState.SELLING, 3, 0, 0), 4L).isPresent());
 		TradeRecord sell = d.onOffer(SLOT, snap(200, GrandExchangeOfferState.SELLING, 3, 3, 900), 5L).get();
 		assertEquals(TradeRecord.Side.SELL, sell.side);
@@ -256,7 +256,7 @@ public class GeOfferDifferTest
 		d.onOffer(SLOT, snap(2359, GrandExchangeOfferState.BUYING, 1000, 0, 0), 1L);
 		d.onOffer(SLOT, snap(2359, GrandExchangeOfferState.BUYING, 1000, 747, 705_168), 2L);
 
-		// Disconnect: the client fires EMPTY per slot while NOT logged in — the subscriber drops it
+		// Disconnect: the client fires EMPTY per slot while NOT logged in; the subscriber drops it
 		// via isLogoutClear, so the differ never sees it (nothing to fold here). The baseline the
 		// profile persists at that moment must still hold slot 747.
 		assertTrue(GeOfferDiffer.isLogoutClear(
@@ -271,5 +271,20 @@ public class GeOfferDifferTest
 		assertEquals(253, f.quantity);
 		assertTrue(f.recovered);
 		assertEquals(2L, f.offlineSince);
+	}
+
+	@Test
+	public void fillAboveMaxCash_keepsTheFullPrice()
+	{
+		// Since 2026-09-30 an offer's price and spent can pass 2,147,483,647.
+		long price = 5_000_000_000L;
+		GeOfferDiffer d = new GeOfferDiffer();
+		assertFalse(d.onOffer(SLOT, snapAt(20997, GrandExchangeOfferState.BUYING, 2, 0, 0, price), 1L)
+			.isPresent());
+		TradeRecord r = d.onOffer(SLOT, snapAt(20997, GrandExchangeOfferState.BOUGHT, 2, 2, 2 * price, price), 2L)
+			.get();
+		assertEquals(2, r.quantity);
+		assertEquals(price, r.price);
+		assertEquals(2 * price, r.spent);
 	}
 }

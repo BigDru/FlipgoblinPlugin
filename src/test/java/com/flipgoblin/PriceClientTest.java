@@ -67,10 +67,10 @@ public class PriceClientTest
 		assertEquals(1L, s.time[0]);
 		assertEquals(3L, s.time[2]);
 		assertEquals(100.0, s.ask[0], 0);
-		assertEquals(101.0, s.ask[1], 0); // synthetic bucket — falls back to the window avg
+		assertEquals(101.0, s.ask[1], 0); // synthetic bucket: falls back to the window avg
 		assertTrue(Double.isNaN(s.ask[2])); // side truly absent
 		assertEquals(97.0, s.bid[2], 0);
-		assertNull(s.askReal); // candle series carry no fill flags — only the 1m tick series do
+		assertNull(s.askReal); // candle series carry no fill flags; only the 1m tick series do
 		assertEquals(40.0, s.askVol[0], 0); // per-bucket volumes ride along for the volume pane
 		assertEquals(50.0, s.bidVol[0], 0);
 		assertTrue(Double.isNaN(s.askVol[1])); // absent volume stays NaN, never zero-filled
@@ -90,7 +90,7 @@ public class PriceClientTest
 		// now = minute 100 (epoch 6000s); 5-minute window ⇒ slots at minutes 95..100.
 		long now = 6_000_000L;
 		String body = "{\"ok\":true,\"itemId\":2,\"ticks\":["
-			+ "{\"time\":5580,\"ask\":100,\"bid\":null}," // minute 93 — pre-window, feeds the carry
+			+ "{\"time\":5580,\"ask\":100,\"bid\":null}," // minute 93: pre-window, feeds the carry
 			+ "{\"time\":5760,\"ask\":null,\"bid\":90},"  // minute 96
 			+ "{\"time\":5880,\"ask\":102,\"bid\":null}]}"; // minute 98
 		PriceClient.Series s = PriceClient.parseTicks(body, 5, now, GSON);
@@ -104,7 +104,7 @@ public class PriceClientTest
 		assertEquals(102.0, s.ask[3], 0);
 		assertEquals(102.0, s.ask[5], 0); // plateau extends through "now"
 		assertEquals(90.0, s.bid[5], 0);
-		// Real-fill flags mark ONLY the slots where a trade landed — carried plateaus stay false.
+		// Real-fill flags mark ONLY the slots where a trade landed; carried plateaus stay false.
 		assertTrue(s.bidReal[1]);
 		assertFalse(s.askReal[1]); // ask was carried at minute 96, not traded
 		assertTrue(s.askReal[3]);
@@ -118,7 +118,7 @@ public class PriceClientTest
 		// s-maxage 60, served copy 52s old → fresh in 8s (+1.5s margin).
 		assertEquals(9_500L, PriceClient.cacheCycleDelayMs("public, max-age=15, s-maxage=60", "52"));
 		assertEquals(61_500L, PriceClient.cacheCycleDelayMs("s-maxage=60", "0"));
-		assertEquals(3_000L, PriceClient.cacheCycleDelayMs("s-maxage=60", "59")); // floor — no hammering
+		assertEquals(3_000L, PriceClient.cacheCycleDelayMs("s-maxage=60", "59")); // floor, no hammering
 		assertEquals(-1L, PriceClient.cacheCycleDelayMs("public, max-age=15", "10")); // no s-maxage
 		assertEquals(-1L, PriceClient.cacheCycleDelayMs("s-maxage=60", "abc"));
 		assertEquals(-1L, PriceClient.cacheCycleDelayMs(null, "10"));
@@ -149,7 +149,7 @@ public class PriceClientTest
 		String body = "{\"ok\":true,\"itemId\":2,\"ticks\":["
 			+ "{\"time\":5760,\"ask\":100,\"bid\":null,\"src\":\"5m\"}]}"; // minute 96, derived
 		PriceClient.Series s = PriceClient.parseTicks(body, 5, 6_000_000L, GSON);
-		assertEquals(100.0, s.ask[1], 0); // the plateau is real information — it renders
+		assertEquals(100.0, s.ask[1], 0); // the plateau is real information; it renders
 		assertFalse(s.askReal[1]); // ...but synth averages never get a trade dot
 	}
 
@@ -159,7 +159,7 @@ public class PriceClientTest
 		PriceClient.Series cached = PriceClient.Series.candles(
 			new long[]{100, 200, 300}, new double[]{1, 2, 3}, new double[]{10, 20, 30}, null, null, 1000L);
 
-		// Same live bucket refreshed — values overwritten in place, length unchanged.
+		// Same live bucket refreshed: values overwritten in place, length unchanged.
 		PriceClient.Series sameBucket = PriceClient.Series.candles(
 			new long[]{300}, new double[]{3.5}, new double[]{35}, null, null, 2000L);
 		PriceClient.Series m1 = PriceClient.mergeTail(cached, sameBucket, 3);
@@ -167,7 +167,7 @@ public class PriceClientTest
 		assertEquals(3.5, m1.ask[2], 0);
 		assertEquals(2000L, m1.fetchedAt);
 
-		// Boundary crossed — old live closes, new live appends, head trims to maxLen.
+		// Boundary crossed: old live closes, new live appends, head trims to maxLen.
 		PriceClient.Series crossed = PriceClient.Series.candles(
 			new long[]{300, 400}, new double[]{3.9, 4}, new double[]{39, 40}, null, null, 3000L);
 		PriceClient.Series m2 = PriceClient.mergeTail(cached, crossed, 3);
@@ -177,7 +177,7 @@ public class PriceClientTest
 		assertEquals(4.0, m2.ask[2], 0);
 		assertEquals(3.9, m2.ask[1], 0);
 
-		// Tail from far in the future (client away) — no overlap, caller must refetch full depth.
+		// Tail from far in the future (client away): no overlap, caller must refetch full depth.
 		PriceClient.Series away = PriceClient.Series.candles(
 			new long[]{900, 1000}, new double[]{9, 10}, new double[]{90, 100}, null, null, 4000L);
 		assertNull(PriceClient.mergeTail(cached, away, 3));
@@ -190,7 +190,7 @@ public class PriceClientTest
 		// Minute grid via parseTicks: trades at minutes 96 (bid 90) and 98 (ask 102), now = min 100.
 		String body = "{\"ok\":true,\"itemId\":2,\"ticks\":["
 			+ "{\"time\":5760,\"ask\":null,\"bid\":90},"
-			+ "{\"time\":5820,\"ask\":null,\"bid\":90},"  // minute 97 — later matching bid trade
+			+ "{\"time\":5820,\"ask\":null,\"bid\":90},"  // minute 97: later matching bid trade
 			+ "{\"time\":5880,\"ask\":102,\"bid\":null}]}";
 		PriceClient.Series s = PriceClient.parseTicks(body, 5, 6_000_000L, GSON);
 

@@ -1,4 +1,4 @@
-# Flip Goblin plugin — compliance policy
+# Flip Goblin plugin compliance policy
 
 The short version:
 
@@ -34,11 +34,13 @@ everything is HTTPS. Removing or revoking the token immediately stops all of the
 While a token is set, the plugin exchanges:
 
 - **Market data reads:** item ids + the token, to fetch live prices/candles for items the
-  user views at the GE (or hovers in their inventory — toggleable), plus a bulk price list
+  user views at the GE (or hovers in their inventory, if enabled), plus a bulk price list
   used to value the user's own assets. No character, session, or hardware identifiers.
   Batched, edge-cached, and rate-limited server-side.
-- **Trade sync:** the user's own GE fills — item id, side, price, quantity, timestamp, GE
-  slot, and a random dedup id — to their own account, so their dashboard shows their trades.
+- **Trade sync:** the user's own GE fills (item id, side, price, quantity, timestamp, GE
+  slot, and a random dedup id) to their own account, so their dashboard shows their trades.
+  When the user presses **Ignore** on an item (not a flip), the item id and the click time are
+  sent too, so the dashboard shows the same thing as the panel.
 - **Price contributions:** those same fills, minus the GE slot, feed the shared price
   stream. The site only ever shows blended aggregates across many contributors, never an
   individual's fills; raw reports are kept at most 7 days and are tied to the account for
@@ -55,4 +57,4 @@ While a token is set, the plugin exchanges:
 **Never sent, linked or not:** Jagex account or login identity, other players' names,
 hiscores, location, chat, hardware or client fingerprints.
 
-The plugin never calls the OSRS Wiki API — all traffic goes to our backend.
+The plugin never calls the OSRS Wiki API. All traffic goes to our backend.

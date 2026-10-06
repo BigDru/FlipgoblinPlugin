@@ -289,7 +289,7 @@ final class CustodyTracker
 			prevSession == null ? 0 : prevSession.lastSeenMs, bankChainTrusted);
 		if (!welcomeVisible)
 		{
-			queueConsole(); // click-through beat the judge — don't lose the mirror line
+			queueConsole(); // click-through beat the judge; don't lose the mirror line
 		}
 		host.onJudged(acquitted);
 	}
@@ -305,12 +305,12 @@ final class CustodyTracker
 		String meaning = verdict == LoginCustody.Verdict.ACQUITTED
 			? "last session was ours"
 			: verdict == LoginCustody.Verdict.CONVICTED
-				? "someone was online after our last session — another client or mobile?"
+				? "someone was online after our last session (another client or mobile?)"
 				: "can't prove the last session was ours";
 		String gate = bankChainTrusted
 			? "Bank snapshot trusted; full net worth restored."
 			: verdict == LoginCustody.Verdict.ACQUITTED
-				? "Bank photo predates an unverified gap — open your bank once to restore full net worth."
+				? "Bank photo predates an unverified gap. Open your bank once to restore full net worth."
 				: "Open your bank for full net worth.";
 		chatMessageManager.queue(QueuedMessage.builder()
 			.type(ChatMessageType.CONSOLE)
@@ -344,7 +344,7 @@ final class CustodyTracker
 		}
 		catch (RuntimeException e)
 		{
-			log.warn("corrupt session record in profile — treating as absent (AMBIGUOUS)", e);
+			log.warn("corrupt session record in profile, treating as absent (AMBIGUOUS)", e);
 			return null;
 		}
 	}

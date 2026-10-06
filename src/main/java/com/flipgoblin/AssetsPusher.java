@@ -91,7 +91,7 @@ final class AssetsPusher
 			}
 			return;
 		}
-		log.info("[{}] assets push FAILED after {}ms — retrying in {}s", FlipGoblinPlugin.BUILD, took,
+		log.info("[{}] assets push FAILED after {}ms, retrying in {}s", FlipGoblinPlugin.BUILD, took,
 			RETRY_MS / 1000);
 		schedule(RETRY_MS);
 	}

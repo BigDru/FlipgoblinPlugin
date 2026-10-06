@@ -32,7 +32,7 @@ public class CharacterLedgerTest
 	@Test
 	public void realizedIsMatchedPerCharacter_neverMergedFifo()
 	{
-		// A bought, B sold — merged into one FIFO this would "realize" profit; per character the
+		// A bought, B sold: merged into one FIFO this would "realize" profit; per character the
 		// buy stays open and the sell is untracked, so the honest aggregate realizes ZERO.
 		CharacterLedger.Totals t = CharacterLedger.aggregate(Arrays.asList(
 			chr("A", Collections.singletonList(rec(TradeRecord.Side.BUY, 100, 1, NOW - 1000)), null),
@@ -58,7 +58,7 @@ public class CharacterLedgerTest
 	@Test
 	public void horizonReappliesAtReadTime()
 	{
-		// The stored history was trimmed at the character's LAST persist — a fill now older than
+		// The stored history was trimmed at the character's LAST persist; a fill now older than
 		// 7d must fall out of the sum even though it survived in storage.
 		CharacterLedger.Totals t = CharacterLedger.aggregate(Collections.singletonList(
 			chr("A", Arrays.asList(
