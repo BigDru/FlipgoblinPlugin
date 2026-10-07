@@ -9,8 +9,8 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.GrandExchangeOffer;
 import net.runelite.api.GrandExchangeOfferState;
-import net.runelite.api.VarPlayer;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.VarPlayerID;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.ui.overlay.Overlay;
@@ -30,7 +30,7 @@ import net.runelite.client.ui.overlay.components.TitleComponent;
  * config toggle.
  *
  * There are two triggers because the client models them differently: composing an offer
- * sets the CURRENT_GE_ITEM varp (reset to -1 on confirm), while viewing a placed offer
+ * sets the TRADINGPOST_SEARCH varp (reset to -1 on confirm), while viewing a placed offer
  * only sets the GE_SELECTEDSLOT varbit (1-based; 0 means the index screen). In the second
  * case the item comes from that slot's live offer, which also feeds the "Your offer"
  * progress line.
@@ -106,7 +106,7 @@ public class GeInfoOverlay extends Overlay
 			trace("degenerate bounds " + b);
 			return null; // open/close transition frame: no real geometry to anchor to yet
 		}
-		int varp = client.getVarpValue(VarPlayer.CURRENT_GE_ITEM);
+		int varp = client.getVarpValue(VarPlayerID.TRADINGPOST_SEARCH);
 		GrandExchangeOffer viewed = viewedOffer(varp);
 		int itemId = viewed != null ? viewed.getItemId() : varp;
 		if (itemId <= 0)

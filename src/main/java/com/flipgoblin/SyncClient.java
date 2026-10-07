@@ -204,7 +204,7 @@ public final class SyncClient
 				{
 					done = true;
 				}
-				else if (res.code() >= 400 && res.code() < 500 && res.code() != 401 && res.code() != 429)
+				else if (UpdateGate.rejectsForGood(res.code()))
 				{
 					log.warn("{} rejected with HTTP {}, dropping it", op.restore ? "undo-ignore" : "ignore", res.code());
 					done = true;
@@ -443,7 +443,7 @@ public final class SyncClient
 				}
 				return crowdPending.isEmpty();
 			}
-			if (res.code() >= 400 && res.code() < 500 && res.code() != 401 && res.code() != 429)
+			if (UpdateGate.rejectsForGood(res.code()))
 			{
 				log.warn("crowd submit rejected with HTTP {}, dropping {} events", res.code(), n);
 				for (int i = 0; i < n; i++)
@@ -498,7 +498,7 @@ public final class SyncClient
 				log.debug("synced {} fills ({} still pending)", n, pending.size());
 				return pending.isEmpty();
 			}
-			if (res.code() >= 400 && res.code() < 500 && res.code() != 401 && res.code() != 429)
+			if (UpdateGate.rejectsForGood(res.code()))
 			{
 				// The batch itself is malformed (a bug). Drop it rather than wedge the queue forever.
 				log.warn("sync rejected with HTTP {}, dropping {} records", res.code(), n);

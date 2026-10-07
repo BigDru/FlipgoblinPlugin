@@ -16,7 +16,6 @@ import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.GrandExchangeOffer;
 import net.runelite.api.GrandExchangeOfferState;
-import net.runelite.api.InventoryID;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.events.GameStateChanged;
@@ -46,7 +45,7 @@ public class FlipGoblinPlugin extends Plugin
 {
 	// Build/version tag, visible in logs and the settings panel so support reports identify the
 	// running build. Dev jars carry b##; the publish pipeline stamps the dated release version.
-	static final String BUILD = "2026.10.06";
+	static final String BUILD = "2026.10.07";
 
 	/** The Flip Goblin API base URL, baked in. One constant, one server. */
 	static final String API_BASE = "https://flipgoblin-api.druex.workers.dev";
@@ -216,6 +215,8 @@ public class FlipGoblinPlugin extends Plugin
 	@Inject
 	private net.runelite.client.callback.ClientThread clientThread;
 	private SyncClient sync;
+	/** Adds the version header to API calls and pauses them once the server says to update. */
+	private UpdateGate updateGate;
 	private ScheduledFuture<?> flusher;
 	// Read-only website targets (watchlist + alert thresholds) for the GE overlay.
 	private TargetsClient targets;
@@ -228,8 +229,10 @@ public class FlipGoblinPlugin extends Plugin
 		records = new ArrayList<>();
 		dismissals = new ArrayList<>();
 		positions = new GePositions();
-		prices = new PriceClient(okHttpClient, gson);
-		targets = new TargetsClient(okHttpClient);
+		updateGate = new UpdateGate(BUILD, API_BASE, this::onUpdateRequired);
+		OkHttpClient apiHttp = okHttpClient.newBuilder().addInterceptor(updateGate).build();
+		prices = new PriceClient(apiHttp, gson);
+		targets = new TargetsClient(apiHttp);
 		overlayManager.add(overlay);
 		overlayManager.add(geInfoOverlay);
 		overlayManager.add(custodyOverlay);
@@ -242,7 +245,7 @@ public class FlipGoblinPlugin extends Plugin
 			.panel(panel)
 			.build();
 		clientToolbar.addNavigation(navButton);
-		sync = new SyncClient(okHttpClient, gson);
+		sync = new SyncClient(apiHttp, gson);
 		assetsPusher = new AssetsPusher(executor, this::sendAssets);
 		historyImporter = new GeHistoryImporter(client, itemManager);
 		// Custody: plugin enabled while ALREADY at the login screen sees no LOGIN_SCREEN
@@ -660,8 +663,16 @@ public class FlipGoblinPlugin extends Plugin
 		}
 		boolean linked = isLinked();
 		boolean locked = characterLocked;
+		boolean update = updateGate != null && updateGate.required();
 		String name = rsn;
-		SwingUtilities.invokeLater(() -> target.setLinkStatus(linked, locked, name));
+		SwingUtilities.invokeLater(() -> target.setLinkStatus(linked, locked, update, name));
+	}
+
+	/** The server said this version is too old. API calls are already paused; say so in the panel. */
+	private void onUpdateRequired()
+	{
+		log.info("[{}] server requires a newer plugin version; network features paused", BUILD);
+		pushLinkStatus();
 	}
 
 	/**
@@ -1107,7 +1118,7 @@ public class FlipGoblinPlugin extends Plugin
 	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
-		if (event.getContainerId() == InventoryID.BANK.getId())
+		if (event.getContainerId() == net.runelite.api.gameval.InventoryID.BANK)
 		{
 			// BANK-ONLY on purpose: inventory/equipment are live below; merging them here would
 			// double-count the moment they change while the bank stays frozen.
@@ -1119,7 +1130,7 @@ public class FlipGoblinPlugin extends Plugin
 			// logouts for as long as every gap keeps getting ACQUITTED.
 			custody.trustBankChain();
 		}
-		else if (event.getContainerId() == InventoryID.INVENTORY.getId())
+		else if (event.getContainerId() == net.runelite.api.gameval.InventoryID.INV)
 		{
 			int[][] before = liveInventory;
 			liveInventory = pairsOf(event.getItemContainer());
@@ -1141,7 +1152,7 @@ public class FlipGoblinPlugin extends Plugin
 				}
 			}
 		}
-		else if (event.getContainerId() == InventoryID.EQUIPMENT.getId())
+		else if (event.getContainerId() == net.runelite.api.gameval.InventoryID.WORN)
 		{
 			liveEquipment = pairsOf(event.getItemContainer());
 		}
@@ -1840,7 +1851,7 @@ public class FlipGoblinPlugin extends Plugin
 		{
 			return;
 		}
-		net.runelite.api.MenuEntry[] entries = client.getMenuEntries();
+		net.runelite.api.MenuEntry[] entries = client.getMenu().getMenuEntries();
 		if (entries.length == 0)
 		{
 			return;

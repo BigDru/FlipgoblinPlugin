@@ -554,13 +554,21 @@ public final class FlipGoblinPanel extends PluginPanel
 
 	/** New session fill data. EDT only. */
 	/** Updates the account-link status rows on both tabs. EDT only. */
-	public void setLinkStatus(boolean linked, boolean locked, String character)
+	public void setLinkStatus(boolean linked, boolean locked, boolean updateRequired, String character)
 	{
 		characterLockedNow = locked;
 		String text;
 		Color color;
 		String tip = null;
-		if (linked && locked)
+		if (linked && updateRequired)
+		{
+			// The server no longer accepts this plugin version. Nothing is lost while it waits.
+			text = "UPDATE NEEDED";
+			color = LOSS;
+			tip = "Flip Goblin needs an update. Restart RuneLite to install it. Your trades are "
+				+ "kept and sync after the update.";
+		}
+		else if (linked && locked)
 		{
 			// Lapse lock: the server refuses this character. Say so loudly.
 			text = character == null || character.isEmpty() ? "LOCKED" : "LOCKED · " + character;

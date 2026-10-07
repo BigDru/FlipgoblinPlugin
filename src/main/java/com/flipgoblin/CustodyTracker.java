@@ -314,7 +314,7 @@ final class CustodyTracker
 				: "Open your bank for full net worth.";
 		chatMessageManager.queue(QueuedMessage.builder()
 			.type(ChatMessageType.CONSOLE)
-			.value("Flip Goblin custody: " + detail + " → " + verdict + " (" + meaning + "). " + gate)
+			.value("Flip Goblin custody: " + detail + ": " + verdict + " (" + meaning + "). " + gate)
 			.build());
 	}
 
