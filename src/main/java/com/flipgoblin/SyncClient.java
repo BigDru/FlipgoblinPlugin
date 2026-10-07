@@ -65,6 +65,8 @@ public final class SyncClient
 		}
 	}
 	static final long CROWD_MAX_AGE_MS = 60_000; // server slack is ±90s; stay comfortably inside
+	/** The RuneLite profile of the character these fills belong to, or null before the first login. */
+	private volatile String owner;
 
 	public SyncClient(OkHttpClient http, Gson gson)
 	{
@@ -122,15 +124,52 @@ public final class SyncClient
 		}
 	}
 
-	/** Queues a fill for the next flush. Client thread only, like the differ. */
-	public void enqueue(TradeRecord record)
+	String owner()
+	{
+		return owner;
+	}
+
+	/** Ties this queue to a character. Done once, at that character's login. */
+	void claim(String profile)
+	{
+		owner = profile;
+	}
+
+	/** Queues a fill for the next flush. */
+	public synchronized void enqueue(TradeRecord record)
 	{
 		pending.addLast(record);
 	}
 
-	public int pendingCount()
+	public synchronized int pendingCount()
 	{
 		return pending.size();
+	}
+
+	/** A copy of the unsent fills, oldest first. */
+	synchronized List<TradeRecord> pendingSnapshot()
+	{
+		return new ArrayList<>(pending);
+	}
+
+	/**
+	 * Adds saved fills back to the queue, skipping any already queued. Appended, never put in
+	 * front: a flush in flight removes the oldest fills when it succeeds.
+	 */
+	synchronized void restore(List<TradeRecord> saved)
+	{
+		java.util.Set<String> queued = new java.util.HashSet<>();
+		for (TradeRecord r : pending)
+		{
+			queued.add(r.clientId);
+		}
+		for (TradeRecord r : saved)
+		{
+			if (r != null && queued.add(r.clientId))
+			{
+				pending.addLast(r);
+			}
+		}
 	}
 
 	/** Queues an Ignore for the next flush. */
@@ -466,16 +505,20 @@ public final class SyncClient
 	 */
 	public boolean flush(String apiBase, String token, String character)
 	{
-		if (pending.isEmpty())
-		{
-			return true;
-		}
 		List<TradeRecord> batch = new ArrayList<>();
-		int n = Math.min(pending.size(), MAX_BATCH);
-		java.util.Iterator<TradeRecord> it = pending.iterator();
-		for (int i = 0; i < n; i++)
+		int n;
+		synchronized (this)
 		{
-			batch.add(it.next());
+			if (pending.isEmpty())
+			{
+				return true;
+			}
+			n = Math.min(pending.size(), MAX_BATCH);
+			java.util.Iterator<TradeRecord> it = pending.iterator();
+			for (int i = 0; i < n; i++)
+			{
+				batch.add(it.next());
+			}
 		}
 
 		Request.Builder rb = new Request.Builder()
@@ -491,30 +534,34 @@ public final class SyncClient
 		{
 			if (res.isSuccessful())
 			{
-				for (int i = 0; i < n; i++)
-				{
-					pending.pollFirst();
-				}
-				log.debug("synced {} fills ({} still pending)", n, pending.size());
-				return pending.isEmpty();
+				int left = drop(n);
+				log.debug("synced {} fills ({} still pending)", n, left);
+				return left == 0;
 			}
 			if (UpdateGate.rejectsForGood(res.code()))
 			{
 				// The batch itself is malformed (a bug). Drop it rather than wedge the queue forever.
 				log.warn("sync rejected with HTTP {}, dropping {} records", res.code(), n);
-				for (int i = 0; i < n; i++)
-				{
-					pending.pollFirst();
-				}
+				drop(n);
 				return false;
 			}
-			log.debug("sync failed with HTTP {}, will retry ({} pending)", res.code(), pending.size());
+			log.debug("sync failed with HTTP {}, will retry ({} pending)", res.code(), pendingCount());
 			return false;
 		}
 		catch (IOException e)
 		{
-			log.debug("sync unreachable, will retry ({} pending): {}", pending.size(), e.toString());
+			log.debug("sync unreachable, will retry ({} pending): {}", pendingCount(), e.toString());
 			return false;
 		}
+	}
+
+	/** Removes the n oldest fills (the batch just sent). Returns how many are left. */
+	private synchronized int drop(int n)
+	{
+		for (int i = 0; i < n; i++)
+		{
+			pending.pollFirst();
+		}
+		return pending.size();
 	}
 }

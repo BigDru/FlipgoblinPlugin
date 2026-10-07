@@ -565,8 +565,8 @@ public final class FlipGoblinPanel extends PluginPanel
 			// The server no longer accepts this plugin version. Nothing is lost while it waits.
 			text = "UPDATE NEEDED";
 			color = LOSS;
-			tip = "Flip Goblin needs an update. Restart RuneLite to install it. Your trades are "
-				+ "kept and sync after the update.";
+			tip = "Flip Goblin needs an update. Restart RuneLite, or click Update in the Plugin Hub, "
+				+ "to install it. Your trades are kept and sync after the update.";
 		}
 		else if (linked && locked)
 		{

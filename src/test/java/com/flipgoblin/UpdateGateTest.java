@@ -26,6 +26,7 @@ public class UpdateGateTest
 	private final AtomicInteger hits = new AtomicInteger();
 	private final AtomicInteger status = new AtomicInteger(200);
 	private final AtomicReference<String> seenVersion = new AtomicReference<>();
+	private final StringBuilder bodies = new StringBuilder();
 
 	@Before
 	public void start() throws Exception
@@ -35,6 +36,10 @@ public class UpdateGateTest
 		{
 			hits.incrementAndGet();
 			seenVersion.set(ex.getRequestHeaders().getFirst(UpdateGate.HEADER));
+			synchronized (bodies)
+			{
+				bodies.append(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+			}
 			byte[] body = "{\"ok\":true}".getBytes(StandardCharsets.UTF_8);
 			ex.sendResponseHeaders(status.get(), body.length);
 			ex.getResponseBody().write(body);
@@ -106,6 +111,38 @@ public class UpdateGateTest
 		plain.enqueue(new TradeRecord(4151, TradeRecord.Side.BUY, 1_000_000, 1, 1_000_000, 0, 1720000000000L));
 		plain.flush(base, "flipgoblin_test", "Char");
 		assertEquals(0, plain.pendingCount()); // a real 400 still drops the bad batch
+	}
+
+	@Test
+	public void heldTradesSyncAfterARestart() throws Exception
+	{
+		PendingTradesTest.MapStore store = new PendingTradesTest.MapStore();
+		store.linked.add("A");
+		PendingTrades saved = new PendingTrades(store, new Gson());
+
+		// Old version: the server says update, so the fill is held and saved.
+		UpdateGate oldGate = new UpdateGate("2026.10.06", base, () -> { });
+		SyncClient old = new SyncClient(new OkHttpClient.Builder().addInterceptor(oldGate).build(), new Gson());
+		old.claim("A");
+		TradeRecord fill = new TradeRecord(4151, TradeRecord.Side.BUY, 1_000_000, 1, 1_000_000, 0, 1720000000000L);
+		old.enqueue(fill);
+		status.set(426);
+		assertFalse(old.flush(base, "flipgoblin_test", "Char"));
+		saved.save(old);
+
+		// RuneLite restarts on the new version: a fresh client loads the saved fill and sends it.
+		status.set(200);
+		UpdateGate newGate = new UpdateGate("2026.10.07", base, () -> { });
+		SyncClient fresh = new SyncClient(new OkHttpClient.Builder().addInterceptor(newGate).build(), new Gson());
+		fresh.claim("A");
+		saved.load(fresh);
+		assertTrue(fresh.flush(base, "flipgoblin_test", "Char"));
+		synchronized (bodies)
+		{
+			assertTrue(bodies.toString().contains(fill.clientId));
+		}
+		saved.save(fresh);
+		assertNull(store.get("A"));
 	}
 
 	@Test

@@ -45,7 +45,7 @@ public class FlipGoblinPlugin extends Plugin
 {
 	// Build/version tag, visible in logs and the settings panel so support reports identify the
 	// running build. Dev jars carry b##; the publish pipeline stamps the dated release version.
-	static final String BUILD = "2026.10.07";
+	static final String BUILD = "2026.10.07.1";
 
 	/** The Flip Goblin API base URL, baked in. One constant, one server. */
 	static final String API_BASE = "https://flipgoblin-api.druex.workers.dev";
@@ -70,6 +70,8 @@ public class FlipGoblinPlugin extends Plugin
 	private static final String BASELINE_KEY = "slotBaselines";
 	/** Persisted fill history (per character): cross-session cost basis, capped by age and count. */
 	private static final String RECORDS_KEY = "tradeRecords";
+	// Fills not yet accepted by the server, per character (see PendingTrades).
+	private static final String PENDING_KEY = "unsentTrades";
 	/** Saved Ignore events (per character), trimmed like the records. */
 	private static final String DISMISSALS_KEY = "flipDismissals";
 	private static final int DISMISSALS_MAX = 200;
@@ -214,7 +216,9 @@ public class FlipGoblinPlugin extends Plugin
 	private ScheduledExecutorService executor;
 	@Inject
 	private net.runelite.client.callback.ClientThread clientThread;
-	private SyncClient sync;
+	private volatile SyncClient sync;
+	private OkHttpClient apiHttp;
+	private PendingTrades pendingTrades;
 	/** Adds the version header to API calls and pauses them once the server says to update. */
 	private UpdateGate updateGate;
 	private ScheduledFuture<?> flusher;
@@ -230,7 +234,7 @@ public class FlipGoblinPlugin extends Plugin
 		dismissals = new ArrayList<>();
 		positions = new GePositions();
 		updateGate = new UpdateGate(BUILD, API_BASE, this::onUpdateRequired);
-		OkHttpClient apiHttp = okHttpClient.newBuilder().addInterceptor(updateGate).build();
+		apiHttp = okHttpClient.newBuilder().addInterceptor(updateGate).build();
 		prices = new PriceClient(apiHttp, gson);
 		targets = new TargetsClient(apiHttp);
 		overlayManager.add(overlay);
@@ -246,6 +250,9 @@ public class FlipGoblinPlugin extends Plugin
 			.build();
 		clientToolbar.addNavigation(navButton);
 		sync = new SyncClient(apiHttp, gson);
+		pendingTrades = new PendingTrades(pendingStore(), gson);
+		// Enabled or updated while logged in: no login event will come, so bind now.
+		clientThread.invokeLater(this::bindSyncToCharacter);
 		assetsPusher = new AssetsPusher(executor, this::sendAssets);
 		historyImporter = new GeHistoryImporter(client, itemManager);
 		// Custody: plugin enabled while ALREADY at the login screen sees no LOGIN_SCREEN
@@ -290,6 +297,10 @@ public class FlipGoblinPlugin extends Plugin
 		// The assets drain may see the closed state and skip; the next login re-pushes the
 		// complete snapshot anyway (latest wins server-side).
 		SyncClient closingSync = sync;
+		if (closingSync != null)
+		{
+			pendingTrades.save(closingSync); // a restart or update picks these up
+		}
 		AssetsPusher closingPusher = assetsPusher;
 		String closingToken = config.apiToken().trim();
 		String closingCharacter = rsn;
@@ -692,6 +703,7 @@ public class FlipGoblinPlugin extends Plugin
 			}
 			inWorld = true;
 			syncTokenForProfile(); // per-character token BEFORE anything that might sync
+			bindSyncToCharacter();
 			executor.submit(this::refreshLockStatus); // is THIS character allowed to operate?
 			loadOtherCharacters(); // the profile switch changes who "the others" are
 			seedFromProfile();
@@ -1425,6 +1437,7 @@ public class FlipGoblinPlugin extends Plugin
 				if (s != null)
 				{
 					s.enqueue(r);
+					pendingTrades.save(s);
 					// Contributions ride the account link. The flush gate below is the single
 					// token check; unlinked queues simply never send.
 					s.enqueueCrowd(r);
@@ -2041,11 +2054,23 @@ public class FlipGoblinPlugin extends Plugin
 		{
 			return; // locked: queues HOLD (idempotent client ids) and drain the moment we unlock
 		}
+		// Never send one character's fills with another character's token.
+		String owner = s.owner();
+		String profile = configManager.getRSProfileKey();
+		if (owner == null || (profile != null && !profile.equals(owner)))
+		{
+			return;
+		}
 		// The token is the one data switch: trades and the crowd stream both flow whenever
 		// linked, disclosed together on the token config item.
-		if (s.pendingCount() > 0)
+		int before = s.pendingCount();
+		if (before > 0)
 		{
 			s.flush(base, token, rsn);
+			if (s.pendingCount() != before)
+			{
+				pendingTrades.save(s);
+			}
 		}
 		if (s.crowdPendingCount() > 0)
 		{
@@ -2055,6 +2080,67 @@ public class FlipGoblinPlugin extends Plugin
 		{
 			s.flushDismissals(base, token, rsn);
 		}
+	}
+
+	/**
+	 * Gives the sync queue to the character now logged in and adds back its saved fills. On a
+	 * character switch the old queue is saved under its own character and a fresh one starts.
+	 * Client thread.
+	 */
+	private void bindSyncToCharacter()
+	{
+		String profile = configManager.getRSProfileKey();
+		SyncClient s = sync;
+		if (profile == null || s == null || profile.equals(s.owner()))
+		{
+			return;
+		}
+		if (s.owner() == null)
+		{
+			s.claim(profile);
+		}
+		else
+		{
+			pendingTrades.save(s);
+			s = new SyncClient(apiHttp, gson);
+			s.claim(profile);
+			sync = s;
+		}
+		pendingTrades.load(s);
+		executor.submit(this::flushIfEnabled);
+	}
+
+	/** The saved queue lives in each character's RuneLite profile, beside its token. */
+	private PendingTrades.Store pendingStore()
+	{
+		return new PendingTrades.Store()
+		{
+			@Override
+			public String get(String profile)
+			{
+				return configManager.getConfiguration(CONFIG_GROUP, profile, PENDING_KEY);
+			}
+
+			@Override
+			public void put(String profile, String json)
+			{
+				if (json == null)
+				{
+					configManager.unsetConfiguration(CONFIG_GROUP, profile, PENDING_KEY);
+				}
+				else
+				{
+					configManager.setConfiguration(CONFIG_GROUP, profile, PENDING_KEY, json);
+				}
+			}
+
+			@Override
+			public boolean linked(String profile)
+			{
+				String token = configManager.getConfiguration(CONFIG_GROUP, profile, TOKEN_PROFILE_KEY);
+				return token != null && !token.trim().isEmpty();
+			}
+		};
 	}
 
 	/** Refresh website targets (executor); inert until the account link is configured.
