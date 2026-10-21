@@ -9,7 +9,8 @@ repositories {
 	mavenCentral()
 }
 
-def runeLiteVersion = 'latest.release'
+// Nightly CI overrides this with -PruneLiteVersion=latest.integration (the newest snapshot).
+def runeLiteVersion = project.findProperty('runeLiteVersion') ?: 'latest.release'
 def pluginMainClass = 'com.flipgoblin.FlipGoblinPluginTest'
 
 // The dev-launcher (FlipGoblinPluginTest, boots a real client) is NOT a junit test. It lives in its own
@@ -58,4 +59,12 @@ tasks.register('shadowJar', Jar) {
 	exclude 'META-INF/INDEX.LIST', 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', '**/module-info.class'
 	archiveClassifier.set('shadow')
 	archiveFileName.set("${rootProject.name}-${project.version}-all.jar")
+}
+
+// Nightly CI passes -PstrictDeprecation: a newly deprecated RuneLite API fails the build, an early
+// warning before it is removed.
+if (project.hasProperty('strictDeprecation')) {
+	tasks.withType(JavaCompile).configureEach {
+		options.compilerArgs += ['-Xlint:deprecation', '-Werror']
+	}
 }

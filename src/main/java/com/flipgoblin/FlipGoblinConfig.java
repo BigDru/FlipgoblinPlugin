@@ -3,6 +3,7 @@ package com.flipgoblin;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.Notification;
 
 @ConfigGroup("flipgoblin")
 public interface FlipGoblinConfig extends Config
@@ -16,7 +17,8 @@ public interface FlipGoblinConfig extends Config
 	// The server URL is baked into FlipGoblinPlugin.API_BASE; there is no config item for it.
 	// All real settings live in the Flip Goblin side panel's Settings tab. The items below are
 	// hidden ConfigManager-backed storage the panel writes through, so values persist and
-	// live-apply as normal. The one visible item is the pointer note.
+	// live-apply as normal. Two items stay visible: the pointer note, and the offer notification,
+	// because only RuneLite's own page has the sound, flash and tray options for it.
 
 	// RuneLite's config system has no plain-label or button widgets, so the pointer is a
 	// checkbox acting as a pure clicker: every toggle, tick or untick, opens the panel's
@@ -37,11 +39,24 @@ public interface FlipGoblinConfig extends Config
 	}
 
 	@ConfigItem(
+		position = 12,
+		keyName = "offerCompleteNotification",
+		name = "Notify when an offer completes",
+		description = DESC_OPEN
+			+ "Notifies you when a buy or sell offer completes. Purely local: nothing is sent anywhere."
+			+ DESC_CLOSE
+	)
+	default Notification offerCompleteNotification()
+	{
+		return Notification.ON;
+	}
+
+	@ConfigItem(
 		position = 2,
 		keyName = "apiToken",
 		name = "Account token",
 		description = DESC_OPEN
-			+ "Paste the one-time token from your FlipGoblin dashboard (Settings → generate token; free account) to link THE CHARACTER YOU ARE LOGGED IN ON. Each character keeps its own token (mint one per character for separate dashboard tracking; this field always shows the current character's). Linking is the plugin's ONE data switch. While a token is set: live market data is fetched for items you view at the GE or hover in your inventory (each request carries the item id and your token, nothing else); your GE fills (item, buy/sell, price, quantity, time, GE slot) and the items you mark Ignore (item, time) sync to YOUR dashboard; those same fills (minus slot) feed FlipGoblin's shared price stream, where only blended aggregates from many contributors are ever shown; your asset snapshot (bank, inventory, equipment, GE-held items, coins) syncs to YOUR account; and this character's name rides along purely as a dashboard label. Remove the token to unlink this character; the plugin then works purely locally on it."
+			+ "Paste the one-time token from your FlipGoblin dashboard (Settings → generate token; free account) to link THE CHARACTER YOU ARE LOGGED IN ON. Each character keeps its own token (mint one per character for separate dashboard tracking; this field always shows the current character's). Linking is the plugin's ONE data switch. While a token is set: live market data is fetched for items you view at the GE or hover in your inventory (each request carries the item id and your token, nothing else); your GE fills (item, buy/sell, price, quantity, time, GE slot) and the items you mark Ignore (item, time) sync to YOUR dashboard; those same fills (minus slot) feed FlipGoblin's shared price stream, where only blended aggregates from many contributors are ever shown; your asset snapshot (bank, inventory, equipment, GE-held items, coins) syncs to YOUR account; whether the plugin still trusts its saved copy of your bank is logged to YOUR account at each login, plugin start and bank open (the custody result, how long ago the game and the plugin say your last session ended, and the plugin build), so gaps in your asset history can be explained; and this character's name rides along purely as a dashboard label. Remove the token to unlink this character; the plugin then works purely locally on it."
 			+ DESC_CLOSE,
 		secret = true,
 		hidden = true
@@ -115,6 +130,20 @@ public interface FlipGoblinConfig extends Config
 		return false;
 	}
 
+	@ConfigItem(
+		position = 4,
+		keyName = "geShowBottomGraph",
+		name = "Show bottom graph",
+		description = DESC_OPEN
+			+ "Show the graph below the Grand Exchange window."
+			+ DESC_CLOSE,
+		hidden = true
+	)
+	default boolean geShowBottomGraph()
+	{
+		return true;
+	}
+
 	// The two timeframe pickers are HIDDEN here: they live in the sidebar panel; only the
 	// show-top-graph master toggle stays in this settings page. The keys remain config-backed
 	// so the panel writes through ConfigManager and the values persist.
@@ -142,6 +171,38 @@ public interface FlipGoblinConfig extends Config
 		return Timeframe.DAYS_2;
 	}
 
+	@net.runelite.client.config.Range(min = 80, max = 400)
+	@ConfigItem(position = 6, keyName = "geTopGraphHeight", name = "Top graph height",
+		description = "Height of the graph above the Grand Exchange window, in pixels.", hidden = true)
+	default int geTopGraphHeight()
+	{
+		return 176;
+	}
+
+	@net.runelite.client.config.Range(min = -200, max = 200)
+	@ConfigItem(position = 6, keyName = "geTopGraphOffset", name = "Top graph offset",
+		description = "Moves the graph above the Grand Exchange window up (negative) or down, in pixels.", hidden = true)
+	default int geTopGraphOffset()
+	{
+		return 0;
+	}
+
+	@net.runelite.client.config.Range(min = 80, max = 400)
+	@ConfigItem(position = 6, keyName = "geBottomGraphHeight", name = "Bottom graph height",
+		description = "Height of the graph below the Grand Exchange window, in pixels.", hidden = true)
+	default int geBottomGraphHeight()
+	{
+		return 176;
+	}
+
+	@net.runelite.client.config.Range(min = -200, max = 200)
+	@ConfigItem(position = 6, keyName = "geBottomGraphOffset", name = "Bottom graph offset",
+		description = "Moves the graph below the Grand Exchange window up (negative) or down, in pixels.", hidden = true)
+	default int geBottomGraphOffset()
+	{
+		return 0;
+	}
+
 	@net.runelite.client.config.Range(max = 100)
 	@ConfigItem(
 		position = 7,
@@ -155,6 +216,20 @@ public interface FlipGoblinConfig extends Config
 	default int gePanelOpacity()
 	{
 		return 55; // ≈ the original translucent black (140/255)
+	}
+
+	@ConfigItem(
+		position = 7,
+		keyName = "gePanelBorder",
+		name = "GE panel borders",
+		description = DESC_OPEN
+			+ "Draw a border around the GE graphs and panels."
+			+ DESC_CLOSE,
+		hidden = true
+	)
+	default boolean gePanelBorder()
+	{
+		return false;
 	}
 
 	@ConfigItem(

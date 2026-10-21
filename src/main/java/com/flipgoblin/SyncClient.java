@@ -424,6 +424,27 @@ public final class SyncClient
 		}
 	}
 
+	/** Sends one bank-trust event to the server's custody log (POST /plugin/custody). Blocking. */
+	public void postCustody(String apiBase, String token, String bodyJson)
+	{
+		Request request = new Request.Builder()
+			.url(apiBase.replaceAll("/+$", "") + "/plugin/custody")
+			.header("Authorization", "Bearer " + token)
+			.post(RequestBody.create(JSON, bodyJson))
+			.build();
+		try (Response res = http.newCall(request).execute())
+		{
+			if (!res.isSuccessful())
+			{
+				log.debug("custody log failed with HTTP {}", res.code());
+			}
+		}
+		catch (java.io.IOException e)
+		{
+			log.debug("custody log failed: {}", e.toString());
+		}
+	}
+
 	/** The crowd wire payload: exactly the disclosed fields. The GE slot is deliberately absent. */
 	static JsonObject buildCrowdPayload(List<TradeRecord> batch)
 	{

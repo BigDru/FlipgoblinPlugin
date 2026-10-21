@@ -91,8 +91,12 @@ public final class FlipGoblinPanel extends PluginPanel
 	/** The second assets line (bank age or refresh hint). One string per line, so nothing collides. */
 	private final JLabel assetsDetail = value("", MUTED);
 	private final JPanel assetsDetailRow = kvRow("", assetsDetail);
-	/** The account-link status line: the current character's token state, made visible. */
-	private final JLabel linkValue = value("not linked", MUTED);
+	/** Coins and platinum you hold, not counting gp held by open buy offers. */
+	private final JLabel cashValue = value("", MUTED);
+	private final JPanel cashRow = kvRow("Cash", cashValue);
+	/** The account-link line, shown only when the link needs fixing. */
+	private final JLabel linkValue = value("not linked: see Settings", WORKING);
+	private final JPanel linkBlock = new JPanel();
 	// Settings tab. Controls write through ConfigManager, refreshSettings() syncs them
 	// back, and the guard stops a programmatic sync from echoing writes.
 	private final JLabel settingsLinkValue = value("not linked", MUTED);
@@ -106,14 +110,28 @@ public final class FlipGoblinPanel extends PluginPanel
 	};
 	private final JCheckBox invHoverBox = new TipCheckBox("Inventory hover tooltip");
 	private final JCheckBox topGraphBox = new TipCheckBox("Show top GE graph");
+	private final JCheckBox bottomGraphBox = new TipCheckBox("Show bottom GE graph");
+	private final JCheckBox panelBorderBox = new TipCheckBox("GE panel borders");
 	private final JCheckBox hideUntrackedBox = new TipCheckBox("Hide untracked sales");
 	private final JCheckBox hideIgnoredBox = new TipCheckBox("Hide ignored items");
+	private final JCheckBox offerNotifyBox = new TipCheckBox("Notify when an offer completes");
 	private final JSlider opacitySlider = new JSlider(0, 100, 55);
+	// Each graph's size and position. Ranges match the config's.
+	private final JSlider topHeightSlider = new JSlider(80, 400, 176);
+	private final JSlider topOffsetSlider = new JSlider(-200, 200, 0);
+	private final JSlider bottomHeightSlider = new JSlider(80, 400, 176);
+	private final JSlider bottomOffsetSlider = new JSlider(-200, 200, 0);
 	private boolean refreshingSettings;
 	// Kept as fields so the config page's open-settings clicker can land on the Settings tab.
 	private final MaterialTabGroup tabGroup;
 	private final MaterialTab settingsTab;
+	/** Active offers, always shown under the stats. */
 	private final JPanel cards = new JPanel();
+	// The sub-tabs under the offers. render() refills all three.
+	private final JPanel itemsList = listPanel();
+	private final JPanel flipsList = listPanel();
+	private final JPanel fillsList = listPanel();
+	private final MaterialTabGroup listTabs;
 	// Linked-characters management. The rows are rebuilt from config by refreshSettings().
 	private final JPanel charactersRows = new JPanel();
 	/** The profileKey armed for removal, for the two-click unlink confirm. */
@@ -127,6 +145,7 @@ public final class FlipGoblinPanel extends PluginPanel
 	private final JComboBox<FlipGoblinConfig.Timeframe> bottomGraphCombo =
 		new JComboBox<>(FlipGoblinConfig.Timeframe.values());
 	private final JPanel topGraphRow;
+	private final JPanel bottomGraphRow;
 	/** Item ids whose card the user opened. Cards start closed; this survives rebuilds. */
 	private final Set<Integer> expanded = new HashSet<>();
 
@@ -172,24 +191,70 @@ public final class FlipGoblinPanel extends PluginPanel
 		stats.add(kvRow(plKey, totalValue));
 		stats.add(separator());
 		stats.add(kvRow("Assets", assetsValue));
+		cashRow.setVisible(false);
+		stats.add(cashRow);
 		assetsDetailRow.setVisible(false);
 		stats.add(assetsDetailRow);
-		stats.add(separator());
-		linkValue.setToolTipText(tip("One token per character. Link it in the Settings tab above. "
-			+ "Guide: flipgoblin.com/plugin"));
-		stats.add(kvRow("Account", linkValue));
+		linkBlock.setLayout(new BoxLayout(linkBlock, BoxLayout.Y_AXIS));
+		linkBlock.setOpaque(false);
+		linkBlock.setAlignmentX(Component.LEFT_ALIGNMENT);
+		linkBlock.add(separator());
+		linkBlock.add(kvRow("Account", linkValue));
+		stats.add(linkBlock);
 
 		cards.setLayout(new BoxLayout(cards, BoxLayout.Y_AXIS));
 		cards.setOpaque(false);
 
 		// The Session tab is the live view (stats, offers, fills). The Settings tab holds
 		// everything configurable; RuneLite's config page just points here.
+		JPanel listDisplay = new JPanel(new BorderLayout());
+		listDisplay.setOpaque(false);
+		listTabs = new MaterialTabGroup(listDisplay);
+		listTabs.setBorder(new EmptyBorder(4, 0, 6, 0));
+		MaterialTab itemsTab = new MaterialTab("Items", listTabs, itemsList);
+		listTabs.addTab(itemsTab);
+		listTabs.addTab(new MaterialTab("Flips", listTabs, flipsList));
+		listTabs.addTab(new MaterialTab("Fills", listTabs, fillsList));
+		listTabs.select(itemsTab);
+		JPanel lists = new JPanel(new BorderLayout());
+		lists.setOpaque(false);
+		lists.add(listTabs, BorderLayout.NORTH);
+		lists.add(listDisplay, BorderLayout.CENTER);
+
 		JPanel sessionContent = new JPanel(new BorderLayout(0, 8));
 		sessionContent.setOpaque(false);
 		sessionContent.add(stats, BorderLayout.NORTH);
-		sessionContent.add(cards, BorderLayout.CENTER);
+		// Between the offers and the lists: a link to the website's recommendations.
+		JLabel lookingLink = new TipLabel("<html><u>Looking for items?</u></html>");
+		lookingLink.setFont(FontManager.getRunescapeSmallFont());
+		lookingLink.setForeground(PRICE);
+		lookingLink.setBorder(new EmptyBorder(6, 2, 0, 0));
+		lookingLink.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+		lookingLink.setToolTipText(tip("Opens the flip recommendations on flipgoblin.com in your browser"));
+		lookingLink.addMouseListener(new MouseAdapter()
+		{
+			@Override
+			public void mouseClicked(MouseEvent e)
+			{
+				net.runelite.client.util.LinkBrowser.browse("https://flipgoblin.com/recommend");
+			}
+		});
+		JPanel offersAndLink = new JPanel(new BorderLayout());
+		offersAndLink.setOpaque(false);
+		offersAndLink.add(cards, BorderLayout.NORTH);
+		offersAndLink.add(lookingLink, BorderLayout.SOUTH);
+		JPanel below = new JPanel(new BorderLayout());
+		below.setOpaque(false);
+		below.add(offersAndLink, BorderLayout.NORTH);
+		below.add(lists, BorderLayout.CENTER);
+		sessionContent.add(below, BorderLayout.CENTER);
 
-		topGraphRow = comboRow("Top graph", topGraphCombo, "geTopGraph");
+		topGraphRow = graphGroup(comboRow("Top graph", topGraphCombo, "geTopGraph"),
+			sliderRow("Height", topHeightSlider, "geTopGraphHeight"),
+			sliderRow("Y offset", topOffsetSlider, "geTopGraphOffset"));
+		bottomGraphRow = graphGroup(comboRow("Bottom graph", bottomGraphCombo, "geBottomGraph"),
+			sliderRow("Height", bottomHeightSlider, "geBottomGraphHeight"),
+			sliderRow("Y offset", bottomOffsetSlider, "geBottomGraphOffset"));
 		JPanel settingsContent = buildSettingsTab();
 
 		JPanel display = new JPanel(new BorderLayout());
@@ -304,16 +369,13 @@ public final class FlipGoblinPanel extends PluginPanel
 		JPanel displayCard = card();
 		invHoverBox.setToolTipText(tip("Market tooltip when hovering inventory items outside the GE"));
 		displayCard.add(checkboxRow(invHoverBox, "inventoryHover"));
+		// Each graph's timeframe picker sits right under its own toggle.
 		topGraphBox.setToolTipText(tip("A second graph above the GE window"));
 		displayCard.add(checkboxRow(topGraphBox, "geShowTopGraph"));
-		hideUntrackedBox.setToolTipText(tip("Session items leaves out items with only untracked sales (no tracked buy, "
-			+ "so no profit is counted). Items with a flip always show; the fills list keeps every sale"));
-		displayCard.add(checkboxRow(hideUntrackedBox, "hideUntrackedSales"));
-		hideIgnoredBox.setToolTipText(tip("Session items leaves out items you only ignored (no flip, nothing still "
-			+ "open). Items with a flip always show; untick to see them and their Undo Ignore button"));
-		displayCard.add(checkboxRow(hideIgnoredBox, "hideIgnored"));
 		displayCard.add(topGraphRow);
-		displayCard.add(comboRow("Bottom graph", bottomGraphCombo, "geBottomGraph"));
+		bottomGraphBox.setToolTipText(tip("The graph below the GE window"));
+		displayCard.add(checkboxRow(bottomGraphBox, "geShowBottomGraph"));
+		displayCard.add(bottomGraphRow);
 		JPanel opacityRow = new JPanel(new BorderLayout(6, 0));
 		opacityRow.setOpaque(false);
 		opacityRow.setBorder(new EmptyBorder(2, 0, 2, 0));
@@ -333,6 +395,16 @@ public final class FlipGoblinPanel extends PluginPanel
 		opacityRow.add(opacityLabel, BorderLayout.WEST);
 		opacityRow.add(opacitySlider, BorderLayout.CENTER);
 		displayCard.add(opacityRow);
+		panelBorderBox.setToolTipText(tip("A border around the GE graphs and panels"));
+		displayCard.add(checkboxRow(panelBorderBox, "gePanelBorder"));
+		hideUntrackedBox.setToolTipText(tip("Session items leaves out items with only untracked sales (no tracked buy, "
+			+ "so no profit is counted). Items with a flip always show; the fills list keeps every sale"));
+		displayCard.add(checkboxRow(hideUntrackedBox, "hideUntrackedSales"));
+		hideIgnoredBox.setToolTipText(tip("Session items leaves out items you only ignored (no flip, nothing still "
+			+ "open). Items with a flip always show; untick to see them and their Undo Ignore button"));
+		displayCard.add(checkboxRow(hideIgnoredBox, "hideIgnored"));
+		offerNotifyBox.setToolTipText(tip("Notifies you when a buy or sell offer completes"));
+		displayCard.add(notificationRow(offerNotifyBox));
 
 		// The version label: the on-machine way to verify which build loaded.
 		JPanel devCard = card();
@@ -358,24 +430,45 @@ public final class FlipGoblinPanel extends PluginPanel
 		return outer;
 	}
 
-	/** A settings checkbox that writes through to a boolean config key. */
+	/** A settings checkbox that writes through to a boolean config key (none when key is null). */
 	private JPanel checkboxRow(JCheckBox box, String key)
 	{
 		box.setFont(FontManager.getRunescapeSmallFont());
 		box.setForeground(MUTED);
 		box.setOpaque(false);
 		box.setFocusable(false);
-		box.addActionListener(e ->
+		if (key != null)
 		{
-			if (!refreshingSettings)
+			box.addActionListener(e ->
 			{
-				configManager.setConfiguration(FlipGoblinPlugin.CONFIG_GROUP, key, box.isSelected());
-			}
-		});
+				if (!refreshingSettings)
+				{
+					configManager.setConfiguration(FlipGoblinPlugin.CONFIG_GROUP, key, box.isSelected());
+				}
+			});
+		}
 		JPanel row = new JPanel(new BorderLayout());
 		row.setOpaque(false);
 		row.setBorder(new EmptyBorder(2, 0, 2, 0));
 		row.add(box, BorderLayout.WEST);
+		return row;
+	}
+
+	/**
+	 * The offer notification's checkbox. The key holds a whole RuneLite Notification, so the
+	 * box flips only its enabled flag and keeps the player's sound and flash choices.
+	 */
+	private JPanel notificationRow(JCheckBox box)
+	{
+		JPanel row = checkboxRow(box, null);
+		box.addActionListener(e ->
+		{
+			if (!refreshingSettings)
+			{
+				configManager.setConfiguration(FlipGoblinPlugin.CONFIG_GROUP, "offerCompleteNotification",
+					config.offerCompleteNotification().withEnabled(box.isSelected()));
+			}
+		});
 		return row;
 	}
 
@@ -403,12 +496,19 @@ public final class FlipGoblinPanel extends PluginPanel
 			}
 			invHoverBox.setSelected(config.inventoryHover());
 			topGraphBox.setSelected(config.geShowTopGraph());
+			bottomGraphBox.setSelected(config.geShowBottomGraph());
+			panelBorderBox.setSelected(config.gePanelBorder());
 			hideUntrackedBox.setSelected(config.hideUntrackedSales());
 			hideIgnoredBox.setSelected(config.hideIgnored());
+			offerNotifyBox.setSelected(config.offerCompleteNotification().isEnabled());
 			if (opacitySlider.getValue() != config.gePanelOpacity())
 			{
 				opacitySlider.setValue(config.gePanelOpacity());
 			}
+			syncSlider(topHeightSlider, config.geTopGraphHeight());
+			syncSlider(topOffsetSlider, config.geTopGraphOffset());
+			syncSlider(bottomHeightSlider, config.geBottomGraphHeight());
+			syncSlider(bottomOffsetSlider, config.geBottomGraphOffset());
 		}
 		finally
 		{
@@ -505,6 +605,79 @@ public final class FlipGoblinPanel extends PluginPanel
 	}
 
 	/** A label on the left, a timeframe dropdown on the right. Selecting writes through to config. */
+	private static void syncSlider(JSlider s, int v)
+	{
+		if (s.getValue() != v)
+		{
+			s.setValue(v);
+		}
+	}
+
+	/** One graph's settings, shown and hidden together. */
+	private static JPanel graphGroup(JPanel... rows)
+	{
+		JPanel g = new JPanel();
+		g.setLayout(new BoxLayout(g, BoxLayout.Y_AXIS));
+		g.setOpaque(false);
+		g.setAlignmentX(Component.LEFT_ALIGNMENT);
+		for (JPanel r : rows)
+		{
+			g.add(r);
+		}
+		return g;
+	}
+
+	/** A labelled slider with its value on the right. Writes to config when the drag ends. */
+	private JPanel sliderRow(String label, JSlider slider, String key)
+	{
+		JLabel value = new JLabel(Integer.toString(slider.getValue()));
+		value.setFont(FontManager.getRunescapeSmallFont());
+		value.setForeground(MUTED);
+		value.setPreferredSize(new Dimension(26, value.getPreferredSize().height));
+		value.setHorizontalAlignment(SwingConstants.RIGHT);
+		slider.setOpaque(false);
+		slider.setFocusable(false);
+		slider.addChangeListener(e ->
+		{
+			value.setText(Integer.toString(slider.getValue()));
+			if (!refreshingSettings && !slider.getValueIsAdjusting())
+			{
+				configManager.setConfiguration(FlipGoblinPlugin.CONFIG_GROUP, key, slider.getValue());
+			}
+		});
+		JPanel row = new JPanel(new BorderLayout(6, 0));
+		row.setOpaque(false);
+		row.setBorder(new EmptyBorder(2, 0, 2, 0));
+		JLabel k = new JLabel(label);
+		k.setFont(FontManager.getRunescapeSmallFont());
+		k.setForeground(MUTED);
+		// One label width, so the sliders line up.
+		k.setPreferredSize(new Dimension(44, k.getPreferredSize().height));
+		row.add(k, BorderLayout.WEST);
+		// Step buttons either side of the slider move it by 1 for fine tuning.
+		JPanel stepper = new JPanel(new BorderLayout(2, 0));
+		stepper.setOpaque(false);
+		stepper.add(stepButton("<", "One less", slider, -1), BorderLayout.WEST);
+		stepper.add(slider, BorderLayout.CENTER);
+		stepper.add(stepButton(">", "One more", slider, 1), BorderLayout.EAST);
+		row.add(stepper, BorderLayout.CENTER);
+		row.add(value, BorderLayout.EAST);
+		row.setAlignmentX(Component.LEFT_ALIGNMENT);
+		return row;
+	}
+
+	private static JButton stepButton(String text, String tooltip, JSlider slider, int delta)
+	{
+		JButton b = new TipButton(text);
+		b.setFont(FontManager.getRunescapeSmallFont());
+		b.setFocusable(false);
+		b.setMargin(new java.awt.Insets(0, 0, 0, 0));
+		b.setPreferredSize(new Dimension(14, 16));
+		b.setToolTipText(tooltip);
+		b.addActionListener(e -> slider.setValue(slider.getValue() + delta));
+		return b;
+	}
+
 	private JPanel comboRow(String label, JComboBox<FlipGoblinConfig.Timeframe> combo, String key)
 	{
 		combo.setFont(FontManager.getRunescapeSmallFont());
@@ -530,8 +703,8 @@ public final class FlipGoblinPanel extends PluginPanel
 	}
 
 	/**
-	 * Syncs the pickers with config. The top row shows only while "Show top graph" is
-	 * checked in settings. EDT only; the selection guards stop listener write-back loops.
+	 * Syncs the pickers with config. Each graph's picker and sliders show only while that graph
+	 * is turned on in settings. EDT only; the selection guards stop listener write-back loops.
 	 */
 	public void refreshGraphControls()
 	{
@@ -543,10 +716,12 @@ public final class FlipGoblinPanel extends PluginPanel
 		{
 			bottomGraphCombo.setSelectedItem(config.geBottomGraph());
 		}
-		boolean show = config.geShowTopGraph();
-		if (topGraphRow.isVisible() != show)
+		boolean showTop = config.geShowTopGraph();
+		boolean showBottom = config.geShowBottomGraph();
+		if (topGraphRow.isVisible() != showTop || bottomGraphRow.isVisible() != showBottom)
 		{
-			topGraphRow.setVisible(show);
+			topGraphRow.setVisible(showTop);
+			bottomGraphRow.setVisible(showBottom);
 			revalidate();
 			repaint();
 		}
@@ -586,8 +761,10 @@ public final class FlipGoblinPanel extends PluginPanel
 			text = "not linked";
 			color = MUTED;
 		}
-		linkValue.setText(text);
-		linkValue.setForeground(color);
+		// The Session tab only shows the account when something needs fixing.
+		linkBlock.setVisible(!linked || locked || updateRequired);
+		linkValue.setText(linked ? text : "not linked: see Settings");
+		linkValue.setForeground(linked ? color : WORKING);
 		linkValue.setToolTipText(tip(tip != null ? tip
 			: "One token per character. Link it in the Settings tab above. "
 				+ "Guide: flipgoblin.com/plugin"));
@@ -637,7 +814,6 @@ public final class FlipGoblinPanel extends PluginPanel
 		totalValue.setForeground(realized > 0 ? PROFIT : realized < 0 ? LOSS : MUTED);
 
 		cards.removeAll();
-
 		if (!positions.isEmpty())
 		{
 			cards.add(sectionLabel("Active offers"));
@@ -646,55 +822,139 @@ public final class FlipGoblinPanel extends PluginPanel
 				cards.add(positionRow(p));
 				cards.add(Box.createVerticalStrut(3));
 			}
-			cards.add(Box.createVerticalStrut(5));
 		}
 
-		if (records.isEmpty() && positions.isEmpty())
+		boolean hideUntracked = config.hideUntrackedSales();
+		boolean hideIgnored = config.hideIgnored();
+
+		itemsList.removeAll();
+		// Items with an Ignore on record get the Undo button.
+		Set<Integer> ignoredItems = new HashSet<>();
+		for (Dismissal d : dismissals)
 		{
-			JLabel none = new JLabel("No offers or trades yet this session.");
-			none.setFont(FontManager.getRunescapeSmallFont());
-			none.setForeground(MUTED);
-			none.setBorder(new EmptyBorder(4, 2, 0, 0));
-			none.setAlignmentX(Component.LEFT_ALIGNMENT);
-			cards.add(none);
-			revalidate();
-			repaint();
-			return;
+			ignoredItems.add(d.itemId);
+		}
+		for (SessionStats.ItemPosition p : stats.items)
+		{
+			// Flips and open units always show.
+			if (SessionStats.hiddenCard(p, hideUntracked, hideIgnored))
+			{
+				continue;
+			}
+			itemsList.add(itemCard(p, ignoredItems.contains(p.itemId)));
+			itemsList.add(Box.createVerticalStrut(6));
+		}
+		if (itemsList.getComponentCount() == 0)
+		{
+			itemsList.add(emptyNote("No items traded yet this session."));
 		}
 
-		if (!records.isEmpty())
+		flipsList.removeAll();
+		int shownFlips = 0;
+		for (int i = stats.flips.size() - 1; i >= 0 && shownFlips < MAX_FILL_ROWS; i--)
 		{
-			// Items with an Ignore on record get the Undo button.
-			Set<Integer> ignoredItems = new HashSet<>();
-			for (Dismissal d : dismissals)
+			SessionStats.Flip f = stats.flips.get(i);
+			// A buy that was only ignored, never sold, is not a flip worth showing.
+			if (f.soldQty == 0 && f.ignoredQty > 0 && hideIgnored)
 			{
-				ignoredItems.add(d.itemId);
+				continue;
 			}
-			cards.add(sectionLabel("Session items"));
-			boolean hideUntracked = config.hideUntrackedSales();
-			boolean hideIgnored = config.hideIgnored();
-			for (SessionStats.ItemPosition p : stats.items)
-			{
-				// Flips and open units always show.
-				if (SessionStats.hiddenCard(p, hideUntracked, hideIgnored))
-				{
-					continue;
-				}
-				cards.add(itemCard(p, ignoredItems.contains(p.itemId)));
-				cards.add(Box.createVerticalStrut(6));
-			}
+			flipsList.add(flipRow(f));
+			flipsList.add(Box.createVerticalStrut(3));
+			shownFlips++;
+		}
+		if (shownFlips == 0)
+		{
+			flipsList.add(emptyNote("No flips yet. A flip starts with a buy."));
+		}
 
-			cards.add(sectionLabel("Fills (newest first)"));
-			int shown = 0;
-			for (int i = records.size() - 1; i >= 0 && shown < MAX_FILL_ROWS; i--, shown++)
-			{
-				cards.add(fillRow(records.get(i)));
-				cards.add(Box.createVerticalStrut(3));
-			}
+		fillsList.removeAll();
+		int shown = 0;
+		for (int i = records.size() - 1; i >= 0 && shown < MAX_FILL_ROWS; i--, shown++)
+		{
+			fillsList.add(fillRow(records.get(i)));
+			fillsList.add(Box.createVerticalStrut(3));
+		}
+		if (shown == 0)
+		{
+			fillsList.add(emptyNote("No fills yet this session."));
 		}
 
 		revalidate();
 		repaint();
+	}
+
+	/** One flip: icon | "2,291 Gold ore" + profit / "142 -> 125 · 17:12" or "sold 500/2,291". */
+	private JPanel flipRow(SessionStats.Flip f)
+	{
+		JPanel row = new JPanel(new BorderLayout(6, 0));
+		row.setBackground(CARD_BG);
+		row.setBorder(new EmptyBorder(3, 6, 3, 6));
+		row.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+		JLabel icon = new JLabel();
+		icon.setPreferredSize(new Dimension(ICON_W, ICON_H));
+		itemManager.getImage(f.itemId, f.boughtQty, f.boughtQty > 1).addTo(icon);
+		row.add(icon, BorderLayout.WEST);
+
+		JPanel text = new JPanel();
+		text.setLayout(new BoxLayout(text, BoxLayout.Y_AXIS));
+		text.setOpaque(false);
+		JPanel top = new JPanel(new BorderLayout(6, 0));
+		top.setOpaque(false);
+		top.setAlignmentX(Component.LEFT_ALIGNMENT);
+		JLabel name = new JLabel(Gp.exact(f.boughtQty) + " " + nameOf(f.itemId));
+		name.setFont(FontManager.getRunescapeSmallFont());
+		name.setForeground(Color.WHITE);
+		top.add(name, BorderLayout.CENTER);
+		JLabel result = f.soldQty == 0
+			? value(f.ignoredQty > 0 ? "ignored" : "holding", f.ignoredQty > 0 ? MUTED : WORKING)
+			: value(gp(f.realized), f.realized > 0 ? PROFIT : f.realized < 0 ? LOSS : MUTED);
+		top.add(result, BorderLayout.EAST);
+		text.add(top);
+
+		String buy = Gp.exact(Math.round((double) f.boughtValue / f.boughtQty));
+		String line;
+		if (f.soldQty == 0)
+		{
+			line = "bought @ " + buy;
+		}
+		else
+		{
+			line = buy + " -> " + Gp.exact(Math.round((double) f.soldValue / f.soldQty));
+		}
+		line += f.done() ? " · " + HHMM.format(new Date(f.lastTimestamp))
+			: " · sold " + Gp.exact(f.soldQty) + "/" + Gp.exact(f.boughtQty);
+		JLabel bottom = new JLabel(line + (f.recovered && f.done() ? " (offline)" : ""));
+		bottom.setFont(FontManager.getRunescapeSmallFont());
+		bottom.setForeground(MUTED);
+		bottom.setAlignmentX(Component.LEFT_ALIGNMENT);
+		text.add(bottom);
+		if (f.ignoredQty > 0 && f.soldQty > 0)
+		{
+			row.setToolTipText(tip(Gp.exact(f.ignoredQty) + " of these units were ignored, so they are not in the profit"));
+		}
+		row.add(text, BorderLayout.CENTER);
+		row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
+		return row;
+	}
+
+	private static JPanel listPanel()
+	{
+		JPanel p = new JPanel();
+		p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
+		p.setOpaque(false);
+		return p;
+	}
+
+	private static JLabel emptyNote(String text)
+	{
+		JLabel none = new JLabel(text);
+		none.setFont(FontManager.getRunescapeSmallFont());
+		none.setForeground(MUTED);
+		none.setBorder(new EmptyBorder(4, 2, 0, 0));
+		none.setAlignmentX(Component.LEFT_ALIGNMENT);
+		return none;
 	}
 
 	/** One standing offer: icon | name + phase tag / fill detail / thin fill-progress bar. */
@@ -1089,10 +1349,10 @@ public final class FlipGoblinPanel extends PluginPanel
 	 * falls back to the raw stacks·coins line. `bankFresh` = captured THIS session; `bankTrusted`
 	 * = the bank COUNTS in the estimate (fresh, or the custody chain is ACQUITTED-unbroken).
 	 * The split keeps the bank-age display honest when trust comes from custody, not a re-open.
-	 * EDT-only.
+	 * `untrustedReason` says why the bank is not trusted, or is null. EDT-only.
 	 */
 	public void updateAssets(AssetSnapshot composite, long bankTimestamp, boolean bankFresh,
-		boolean bankTrusted, long estTotal, long unpriced)
+		boolean bankTrusted, String untrustedReason, long estTotal, long unpriced, long cash)
 	{
 		// All-characters scope (display only; the plugin's sync payload stays per-character):
 		// add the other linked characters' bank-photo values when both sides are priceable.
@@ -1110,6 +1370,7 @@ public final class FlipGoblinPanel extends PluginPanel
 			assetsValue.setForeground(MUTED);
 			assetsValue.setToolTipText(null);
 			assetsDetailRow.setVisible(false);
+			cashRow.setVisible(false);
 			revalidate();
 			repaint();
 			return;
@@ -1125,7 +1386,7 @@ public final class FlipGoblinPanel extends PluginPanel
 				Math.max(0, System.currentTimeMillis() - bankTimestamp)).toHours();
 			bankPart = bankFresh ? "bank fresh"
 				: "bank " + (hours < 1 ? "<1" : hours) + "h"
-					+ (bankTrusted ? " · custody ✓" : " ⟳");
+					+ (bankTrusted ? " · trusted" : " · not trusted: open bank");
 		}
 		String detailPart;
 		if (estTotal >= 0)
@@ -1134,10 +1395,12 @@ public final class FlipGoblinPanel extends PluginPanel
 			// estimate (the caller hands us the partial composite), so label the number for what
 			// it is. Trusted-but-not-fresh = the ACQUITTED chain: full number, honest bank age.
 			assetsValue.setText((bankTrusted ? "≈ " : "inv+GE ≈ ") + gp(estTotal));
-			// Coins are inside the total, so the detail stays short and never clips the row.
-			detailPart = String.format("%d stacks%s · %s", composite.totalStacks(),
-				unpriced > 0 ? " · " + unpriced + " unpriced" : "", bankPart)
+			// The row is too narrow for one line, so the bank state and the counts get a line each.
+			String counts = String.format("%d stacks%s", composite.totalStacks(),
+				unpriced > 0 ? " · " + unpriced + " unpriced" : "")
 				+ (allScope ? " · +" + oc.characters + " alt" + (oc.characters > 1 ? "s" : "") : "");
+			detailPart = "<html><div style='text-align:right'>" + bankPart + "<br>" + counts
+				+ "</div></html>";
 		}
 		else
 		{
@@ -1146,15 +1409,25 @@ public final class FlipGoblinPanel extends PluginPanel
 		}
 		assetsValue.setForeground(bankTrusted ? PRICE : MUTED);
 		assetsDetail.setText(detailPart);
+		// Orange while the saved bank is not trusted: the total is partial and history is paused.
+		assetsDetail.setForeground(bankTrusted || bankTimestamp == 0 ? MUTED : WORKING);
 		assetsDetailRow.setVisible(true);
+		cashValue.setText(Gp.exact(cash) + " gp");
+		cashValue.setForeground(cash > 0 ? PRICE : MUTED);
+		cashValue.setToolTipText(tip("Coins and platinum tokens on this character"
+			+ (bankTrusted ? ", bank included" : ". Your bank isn't counted until you open it")
+			+ ". Gp in the GE, offers or waiting to collect, isn't included"));
+		cashRow.setVisible(true);
 		String tip = (estTotal >= 0
 			? (bankTrusted
 				? "Estimated sell-now value after GE tax (bank + inventory + equipment + GE offers)"
 					+ (bankFresh ? ""
 						: ". The bank part is the stored photo, provably untouched since your "
 							+ "last session (login custody acquitted)")
-				: "Inventory + equipment + GE only. The bank hasn't been witnessed this session, "
-					+ "so it isn't counted. Open your bank for the full net worth.")
+				: "Inventory + equipment + GE only. Your saved bank isn't trusted"
+					+ (untrustedReason == null ? "" : " because " + untrustedReason)
+					+ ", so it isn't counted and your net-worth history on the website is paused. "
+					+ "Open your bank once to fix both.")
 			: "Bank + inventory + equipment + GE offers")
 			+ (bankTrusted || estTotal >= 0 ? "" : ". Open your bank to refresh the bank part")
 			+ (allScope

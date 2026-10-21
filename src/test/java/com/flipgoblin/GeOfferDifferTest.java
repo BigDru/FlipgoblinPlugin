@@ -287,4 +287,43 @@ public class GeOfferDifferTest
 		assertEquals(price, r.price);
 		assertEquals(2 * price, r.spent);
 	}
+
+	@Test
+	public void completesLive_firesOnceWhenAWatchedOfferFills()
+	{
+		GeOfferDiffer d = new GeOfferDiffer();
+		assertFalse(d.onOffer(SLOT, snap(100, GrandExchangeOfferState.SELLING, 4, 0, 0), 1L).isPresent());
+		OfferSnapshot part = snap(100, GrandExchangeOfferState.SELLING, 4, 3, 300);
+		assertFalse(GeOfferDiffer.completesLive(d.onOffer(SLOT, part, 2L).get(), part));
+		OfferSnapshot done = snap(100, GrandExchangeOfferState.SOLD, 4, 4, 400);
+		assertTrue(GeOfferDiffer.completesLive(d.onOffer(SLOT, done, 3L).get(), done));
+		// The map-load re-fire of the finished state carries no fill, so nothing can fire again.
+		assertFalse(d.onOffer(SLOT, done, 4L).isPresent());
+	}
+
+	@Test
+	public void completesLive_neverFiresForAnOfferThatFinishedWhileLoggedOut()
+	{
+		Map<Integer, GeOfferDiffer.SlotState> seed = new HashMap<>();
+		seed.put(SLOT, new GeOfferDiffer.SlotState(100, 2, 200, 50L, TradeRecord.Side.BUY, 10, 100));
+		GeOfferDiffer d = new GeOfferDiffer(seed);
+		OfferSnapshot done = snap(100, GrandExchangeOfferState.BOUGHT, 10, 10, 1000);
+		assertFalse(GeOfferDiffer.completesLive(d.onOffer(SLOT, done, 100L).get(), done));
+	}
+
+	@Test
+	public void fillsOfOneOfferShareAnIdAndTheNextOfferGetsANewOne()
+	{
+		GeOfferDiffer d = new GeOfferDiffer();
+		assertFalse(d.onOffer(SLOT, snap(100, GrandExchangeOfferState.BUYING, 10, 0, 0), 1L).isPresent());
+		TradeRecord a1 = d.onOffer(SLOT, snap(100, GrandExchangeOfferState.BUYING, 10, 4, 400), 2L).get();
+		TradeRecord a2 = d.onOffer(SLOT, snap(100, GrandExchangeOfferState.BOUGHT, 10, 10, 1000), 3L).get();
+		assertEquals(1L, a1.offerId);
+		assertEquals(1L, a2.offerId);
+		// Collected, then the same offer placed again in the same slot: a new offer.
+		assertFalse(d.onOffer(SLOT, snap(100, GrandExchangeOfferState.EMPTY, 0, 0, 0), 4L).isPresent());
+		assertFalse(d.onOffer(SLOT, snap(100, GrandExchangeOfferState.BUYING, 10, 0, 0), 5L).isPresent());
+		TradeRecord b1 = d.onOffer(SLOT, snap(100, GrandExchangeOfferState.BUYING, 10, 3, 300), 6L).get();
+		assertEquals(5L, b1.offerId);
+	}
 }

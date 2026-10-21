@@ -1,6 +1,7 @@
 package com.flipgoblin;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import java.time.Instant;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.ChatMessageType;
@@ -21,7 +22,7 @@ import net.runelite.client.config.ConfigManager;
 @Slf4j
 final class CustodyTracker
 {
-	/** What the plugin does with custody outcomes. Both run on the client thread. */
+	/** What the plugin does with custody outcomes. All run on the client thread. */
 	interface Host
 	{
 		/** A real fresh login started a new custody window. Reset the un-judged state. */
@@ -29,6 +30,9 @@ final class CustodyTracker
 
 		/** The judge ran. Apply the acquittal payoff, or the assume-collected floor. */
 		void onJudged(boolean acquitted);
+
+		/** Trust was checked at login or changed. Send this body to the server's trust log. */
+		void onCustodyEvent(String bodyJson);
 	}
 
 	private static final String SESSION_KEY = "sessionRecord";
@@ -73,6 +77,8 @@ final class CustodyTracker
 	 * through an ACQUITTED verdict. While true, the stored bank counts in the estimate and
 	 * syncs carry bankFresh=true, so history flows immediately with no bank-open gate. */
 	private volatile boolean bankChainTrusted;
+	/** Why the bank copy is not trusted, in plain words for the panel. Null when trusted or unknown. */
+	private volatile String untrustedReason;
 
 	CustodyTracker(ConfigManager configManager, Gson gson, ChatMessageManager chatMessageManager, Host host)
 	{
@@ -107,6 +113,8 @@ final class CustodyTracker
 			// Plugin enabled mid-session: login instants unknown (0). The next login judges
 			// AMBIGUOUS off this record, which is the honest floor.
 			sessionRecord = new LoginCustody.SessionRecord();
+			untrustedReason = "the plugin started while you were logged in";
+			host.onCustodyEvent(eventJson("plugin_start", null, bankChainTrusted, null, null, null, now));
 		}
 		sessionRecord.lastSeenMs = now;
 		persistSessionRecord();
@@ -163,6 +171,7 @@ final class CustodyTracker
 		verdict = null;
 		detail = null;
 		bankChainTrusted = false; // gated until the judge (or a bank-open) says otherwise
+		untrustedReason = "the login check hasn't finished yet";
 		host.onNewCustodyWindow();
 		sessionRecord = new LoginCustody.SessionRecord();
 		recordLogin(true);
@@ -213,13 +222,24 @@ final class CustodyTracker
 	/** Witnessing the bank restarts its custody chain from this moment. */
 	void trustBankChain()
 	{
+		if (!bankChainTrusted)
+		{
+			host.onCustodyEvent(eventJson("bank_open", null, true, null, null, null,
+				Instant.now().toEpochMilli()));
+		}
 		bankChainTrusted = true;
+		untrustedReason = null;
 		persistSessionRecord();
 	}
 
 	boolean bankChainTrusted()
 	{
 		return bankChainTrusted;
+	}
+
+	String untrustedReason()
+	{
+		return untrustedReason;
 	}
 
 	/** True once this login's judge has run (or a reconnect kept the previous run). */
@@ -273,6 +293,12 @@ final class CustodyTracker
 		LoginCustody.Result result = LoginCustody.judge(report, prevSession, anchor);
 		boolean acquitted = result.verdict == LoginCustody.Verdict.ACQUITTED;
 		bankChainTrusted = acquitted && prevSession != null && prevSession.bankChainTrusted;
+		untrustedReason = bankChainTrusted ? null
+			: result.verdict == LoginCustody.Verdict.CONVICTED
+				? "someone was online after your last session"
+				: !acquitted
+					? "the login check couldn't confirm your last session"
+					: "your last session's bank copy wasn't trusted either";
 		persistSessionRecord();
 		String ours = result.ourAgoMs <= 0 ? "?" : LoginCustody.fmtDuration(result.ourAgoMs);
 		// "ended", not "last login": the report measures the previous session's END (see
@@ -292,6 +318,42 @@ final class CustodyTracker
 			queueConsole(); // click-through beat the judge; don't lose the mirror line
 		}
 		host.onJudged(acquitted);
+		host.onCustodyEvent(eventJson("login", result.verdict, bankChainTrusted,
+			prevSession == null ? null : prevSession.bankChainTrusted,
+			report == null ? null : report.agoMs,
+			result.ourAgoMs <= 0 ? null : result.ourAgoMs, now));
+	}
+
+	/**
+	 * The body for the server's trust log: trust is now {@code trusted} because of
+	 * {@code cause}. Null fields are left out. The welcome text itself is never sent, only
+	 * the gap parsed from it.
+	 */
+	static String eventJson(String cause, LoginCustody.Verdict verdict, boolean trusted,
+		Boolean prevChainTrusted, Long gameAgoMs, Long ourAgoMs, long clientTs)
+	{
+		JsonObject o = new JsonObject();
+		o.addProperty("cause", cause);
+		if (verdict != null)
+		{
+			o.addProperty("verdict", verdict.name().toLowerCase(java.util.Locale.ROOT));
+		}
+		o.addProperty("trusted", trusted);
+		if (prevChainTrusted != null)
+		{
+			o.addProperty("prevChainTrusted", prevChainTrusted);
+		}
+		if (gameAgoMs != null)
+		{
+			o.addProperty("gameAgoMs", gameAgoMs);
+		}
+		if (ourAgoMs != null)
+		{
+			o.addProperty("ourAgoMs", ourAgoMs);
+		}
+		o.addProperty("clientTs", clientTs);
+		o.addProperty("build", FlipGoblinPlugin.BUILD);
+		return o.toString();
 	}
 
 	/** The one console mirror line per login. It lands in client.log for correlation. */

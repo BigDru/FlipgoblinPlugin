@@ -163,4 +163,82 @@ public class GeLimitsTest
 		assertUsage(500, 10 * H + 1800_000, false, true,
 			GeLimits.usage(recs, 2357, 7 * H, 0, 10_000));
 	}
+
+	private static TradeRecord fill(TradeRecord.Side side, long price, int qty, int slot, long ts)
+	{
+		return new TradeRecord(563, side, price, qty, price * qty, slot, ts);
+	}
+
+	@Test
+	public void buyFilledByYourOwnSell_doesNotCountTowardTheLimit()
+	{
+		// The live law rune case: the window was full at 18000, then a 1 rune buy at 125
+		// filled against the player's own 125 sell 0.6s later, and the game allowed it.
+		List<TradeRecord> recs = Arrays.asList(
+			fill(TradeRecord.Side.BUY, 121, 18_000, 0, 1 * H),
+			fill(TradeRecord.Side.BUY, 125, 1, 1, 2 * H),
+			fill(TradeRecord.Side.SELL, 125, 1, 0, 2 * H + 600));
+		assertUsage(18_000, 5 * H, true, false, GeLimits.usage(recs, 563, 3 * H, 1, 18_000));
+	}
+
+	@Test
+	public void selfMatch_onlyTakesOutTheMatchedUnits()
+	{
+		List<TradeRecord> recs = Arrays.asList(
+			fill(TradeRecord.Side.SELL, 125, 3, 0, 1 * H),
+			fill(TradeRecord.Side.BUY, 125, 10, 1, 1 * H + 600)); // 3 from yourself, 7 from others
+		assertUsage(7, 5 * H + 600, false, false, GeLimits.usage(recs, 563, 2 * H, 0, 0));
+	}
+
+	@Test
+	public void selfMatch_needsTheSamePriceAndCloseTimes()
+	{
+		List<TradeRecord> recs = Arrays.asList(
+			fill(TradeRecord.Side.BUY, 121, 5, 0, 1 * H),
+			fill(TradeRecord.Side.SELL, 125, 5, 1, 1 * H + 600), // different price
+			fill(TradeRecord.Side.BUY, 125, 4, 0, 2 * H),
+			fill(TradeRecord.Side.SELL, 125, 4, 1, 2 * H + GeLimits.SELF_MATCH_MS + 1)); // too late
+		assertUsage(9, 5 * H, false, false, GeLimits.usage(recs, 563, 3 * H, 0, 0));
+	}
+
+	@Test
+	public void selfMatch_eachSellUnitPairsOnlyOnce()
+	{
+		List<TradeRecord> recs = Arrays.asList(
+			fill(TradeRecord.Side.BUY, 125, 2, 0, 1 * H),
+			fill(TradeRecord.Side.SELL, 125, 2, 1, 1 * H + 600),
+			fill(TradeRecord.Side.BUY, 125, 2, 2, 1 * H + 1200));
+		assertUsage(2, 5 * H + 1200, false, false, GeLimits.usage(recs, 563, 2 * H, 0, 0));
+	}
+
+	@Test
+	public void selfMatch_neverPairsRecoveredFills()
+	{
+		List<TradeRecord> recs = Arrays.asList(
+			fill(TradeRecord.Side.BUY, 125, 5, 0, 1 * H),
+			new TradeRecord(563, TradeRecord.Side.SELL, 125, 5, 625, 1, 1 * H + 600, true, 0));
+		assertUsage(5, 5 * H, false, false, GeLimits.usage(recs, 563, 2 * H, 0, 0));
+	}
+
+	@Test
+	public void fullySelfMatchedBuy_doesNotOpenAWindow()
+	{
+		List<TradeRecord> recs = Arrays.asList(
+			fill(TradeRecord.Side.BUY, 125, 1, 0, 1 * H),
+			fill(TradeRecord.Side.SELL, 125, 1, 1, 1 * H + 600));
+		assertNull(GeLimits.usage(recs, 563, 2 * H, 0, 0));
+	}
+
+	@Test
+	public void maxBuyIsTheSmallerOfCashAndLimitLeft()
+	{
+		// Jug: 13,000 limit left at 2 gp each. 39 gp buys 19; 1m gp is capped by the limit.
+		assertEquals(19, GeLimits.maxBuy(13_000, 39, 2));
+		assertEquals(13_000, GeLimits.maxBuy(13_000, 1_000_000, 2));
+		// No known limit: the cash alone decides.
+		assertEquals(500_000, GeLimits.maxBuy(-1, 1_000_000, 2));
+		// No cash, or the limit used up: nothing.
+		assertEquals(0, GeLimits.maxBuy(13_000, 0, 2));
+		assertEquals(0, GeLimits.maxBuy(0, 1_000_000, 2));
+	}
 }

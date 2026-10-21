@@ -65,6 +65,7 @@ final class GeLimits
 	 */
 	static Usage usage(List<TradeRecord> records, int itemId, long now, long observedSince, long buyLimit)
 	{
+		records = withoutSelfMatches(records, itemId);
 		long anchor = 0;
 		long used = 0;
 		boolean anyRecovered = false;
@@ -184,10 +185,96 @@ final class GeLimits
 		return anchor > 0 && now < anchor + WINDOW_MS ? used : 0;
 	}
 
+	/** How close a buy and a sell fill must land to count as one trade with yourself. */
+	static final long SELF_MATCH_MS = 3000;
+
+	/**
+	 * This item's records with self-matched units taken out of the buys. When your buy offer
+	 * fills against your own sell offer, the game does not count it toward the buy limit
+	 * (tested in game). Such a trade shows up as a buy fill and a sell fill at the same price,
+	 * a tick or so apart. Only live slot fills can pair, since recovered fills have no real
+	 * time. A buy left with nothing to count is dropped.
+	 */
+	static List<TradeRecord> withoutSelfMatches(List<TradeRecord> records, int itemId)
+	{
+		List<TradeRecord> buys = new ArrayList<>();
+		List<TradeRecord> sells = new ArrayList<>();
+		for (TradeRecord r : records)
+		{
+			if (r.itemId == itemId && r.slot >= 0 && !r.recovered)
+			{
+				(r.side == TradeRecord.Side.BUY ? buys : sells).add(r);
+			}
+		}
+		if (buys.isEmpty() || sells.isEmpty())
+		{
+			return records;
+		}
+		int[] sellLeft = new int[sells.size()];
+		for (int i = 0; i < sells.size(); i++)
+		{
+			sellLeft[i] = sells.get(i).quantity;
+		}
+		java.util.Map<TradeRecord, Integer> matched = new java.util.IdentityHashMap<>();
+		for (TradeRecord b : buys)
+		{
+			int left = b.quantity;
+			for (int i = 0; i < sells.size() && left > 0; i++)
+			{
+				TradeRecord s = sells.get(i);
+				if (sellLeft[i] > 0 && s.price == b.price
+					&& Math.abs(s.timestamp - b.timestamp) <= SELF_MATCH_MS)
+				{
+					int take = Math.min(left, sellLeft[i]);
+					sellLeft[i] -= take;
+					left -= take;
+				}
+			}
+			if (left < b.quantity)
+			{
+				matched.put(b, b.quantity - left);
+			}
+		}
+		if (matched.isEmpty())
+		{
+			return records;
+		}
+		List<TradeRecord> out = new ArrayList<>(records.size());
+		for (TradeRecord r : records)
+		{
+			Integer m = matched.get(r);
+			if (m == null)
+			{
+				out.add(r);
+			}
+			else if (m < r.quantity)
+			{
+				int q = r.quantity - m;
+				out.add(new TradeRecord(r.itemId, r.side, r.price, q, r.price * q, r.slot,
+					r.timestamp, r.recovered, r.offlineSince, r.clientId, r.offerId));
+			}
+		}
+		return out;
+	}
+
 	/** Formats a reset instant as "HH:mm" local time. */
 	static String resetTime(long epochMs)
 	{
 		return java.time.format.DateTimeFormatter.ofPattern("HH:mm").format(
 			java.time.Instant.ofEpochMilli(epochMs).atZone(java.time.ZoneId.systemDefault()));
+	}
+
+	/**
+	 * The most units a buy offer can take: what the cash pays for at {@code price}, capped by
+	 * the limit left. {@code limitLeft} below 0 means the item has no known limit. Pure.
+	 */
+	static long maxBuy(long limitLeft, long cash, long price)
+	{
+		if (price <= 0)
+		{
+			return limitLeft < 0 ? 0 : limitLeft;
+		}
+		long affordable = Math.max(0, cash) / price;
+		return limitLeft < 0 ? affordable : Math.min(limitLeft, affordable);
 	}
 }

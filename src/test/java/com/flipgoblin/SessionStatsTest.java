@@ -1,6 +1,8 @@
 package com.flipgoblin;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -198,5 +200,65 @@ public class SessionStatsTest
 		assertEquals(3_750, p.soldValue);
 		assertEquals(150, p.soldMinPrice);
 		assertEquals(150, p.soldMaxPrice);
+	}
+
+	private static TradeRecord buy(int item, long price, int qty, int slot, long offerId, long ts)
+	{
+		return new TradeRecord(item, TradeRecord.Side.BUY, price, qty, price * qty, slot, ts, false, 0,
+			"b" + ts, offerId);
+	}
+
+	private static TradeRecord sell(int item, long price, int qty, long ts)
+	{
+		return new TradeRecord(item, TradeRecord.Side.SELL, price, qty, price * qty, 7, ts);
+	}
+
+	@Test
+	public void eachBuyOfferIsOneFlipAndSellsCloseThemOldestFirst()
+	{
+		SessionStats.Result r = SessionStats.match(Arrays.asList(
+			// Offer 1 in slot 0, filled in two parts.
+			buy(WHIP, 100, 4, 0, 1, 2),
+			buy(WHIP, 100, 6, 0, 1, 3),
+			// Offer 2, placed again in the same slot after collecting.
+			buy(WHIP, 120, 10, 0, 4, 5),
+			sell(WHIP, 150, 12, 6)));
+		assertEquals(2, r.flips.size());
+		SessionStats.Flip a = r.flips.get(0);
+		assertEquals(10, a.boughtQty);
+		assertEquals(10, a.soldQty);
+		assertTrue(a.done());
+		assertEquals(10 * (150 - 3) - 10 * 100, a.realized);
+		SessionStats.Flip b = r.flips.get(1);
+		assertEquals(10, b.boughtQty);
+		assertEquals(2, b.soldQty);
+		assertFalse(b.done());
+		assertEquals(2 * (150 - 3) - 2 * 120, b.realized);
+		assertEquals(r.totalRealized, a.realized + b.realized);
+	}
+
+	@Test
+	public void sellsWithNoBuyAreNotFlipsAndIgnoreClosesAFlip()
+	{
+		SessionStats.Result r = SessionStats.match(Arrays.asList(
+			sell(WHIP, 150, 5, 1),
+			buy(WHIP, 100, 3, 0, 2, 2)),
+			Collections.singletonList(new Dismissal(WHIP, 3)));
+		assertEquals(1, r.flips.size());
+		assertEquals(3, r.flips.get(0).ignoredQty);
+		assertTrue(r.flips.get(0).done());
+	}
+
+	@Test
+	public void fillsWithNoOfferIdGroupBySlotUntilTheFlipIsDone()
+	{
+		SessionStats.Result r = SessionStats.match(Arrays.asList(
+			buy(WHIP, 100, 4, 0, 0, 1),
+			buy(WHIP, 100, 6, 0, 0, 2),
+			sell(WHIP, 150, 10, 3),
+			buy(WHIP, 100, 5, 0, 0, 4)));
+		assertEquals(2, r.flips.size());
+		assertEquals(10, r.flips.get(0).boughtQty);
+		assertEquals(5, r.flips.get(1).boughtQty);
 	}
 }

@@ -29,6 +29,8 @@ public final class TradeRecord
 	public final boolean recovered;
 	/** Earliest possible true time of a recovered fill (epoch ms). 0 means unknown or not recovered. */
 	public final long offlineSince;
+	/** Which GE offer this fill belongs to: when that offer was first seen. 0 means unknown. Local only. */
+	public final long offerId;
 
 	/** A live fill, observed as it happened. */
 	public TradeRecord(int itemId, Side side, long price, int quantity, long spent, int slot, long timestamp)
@@ -51,6 +53,13 @@ public final class TradeRecord
 	public TradeRecord(int itemId, Side side, long price, int quantity, long spent, int slot, long timestamp,
 		boolean recovered, long offlineSince, String clientId)
 	{
+		this(itemId, side, price, quantity, spent, slot, timestamp, recovered, offlineSince, clientId, 0);
+	}
+
+	public TradeRecord(int itemId, Side side, long price, int quantity, long spent, int slot, long timestamp,
+		boolean recovered, long offlineSince, String clientId, long offerId)
+	{
+		this.offerId = offerId;
 		this.itemId = itemId;
 		this.side = side;
 		this.price = price;

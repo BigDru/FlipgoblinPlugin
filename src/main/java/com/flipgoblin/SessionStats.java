@@ -121,15 +121,49 @@ public final class SessionStats
 		}
 	}
 
+	/**
+	 * One flip: one buy offer (completed, or cancelled part filled) and the units of it sold back,
+	 * oldest buys first. It is done once every bought unit is sold or ignored.
+	 */
+	public static final class Flip
+	{
+		public final int itemId;
+		public final int slot;
+		final long offerId;
+		public int boughtQty;
+		public long boughtValue;
+		public int soldQty;
+		/** Gross gp of the units sold back, before tax. */
+		public long soldValue;
+		public long realized;
+		public int ignoredQty;
+		public long lastTimestamp;
+		public boolean recovered;
+
+		Flip(int itemId, int slot, long offerId)
+		{
+			this.itemId = itemId;
+			this.slot = slot;
+			this.offerId = offerId;
+		}
+
+		public boolean done()
+		{
+			return soldQty + ignoredQty >= boughtQty;
+		}
+	}
+
 	private static final class BuyLot
 	{
 		int qty;
 		final long price;
+		final Flip flip;
 
-		BuyLot(int qty, long price)
+		BuyLot(int qty, long price, Flip flip)
 		{
 			this.qty = qty;
 			this.price = price;
+			this.flip = flip;
 		}
 	}
 
@@ -147,6 +181,9 @@ public final class SessionStats
 	{
 		Map<Integer, Deque<BuyLot>> lots = new HashMap<>();
 		Map<Integer, ItemPosition> positions = new HashMap<>();
+		// The flip each buy offer feeds, by item, slot and offer.
+		Map<String, Flip> openFlips = new HashMap<>();
+		List<Flip> flips = new ArrayList<>();
 		int nextDismissal = 0;
 
 		for (TradeRecord r : records)
@@ -162,7 +199,20 @@ public final class SessionStats
 				p.boughtValue += (long) r.quantity * r.price;
 				p.boughtMinPrice = Math.min(p.boughtMinPrice, r.price);
 				p.boughtMaxPrice = Math.max(p.boughtMaxPrice, r.price);
-				lots.computeIfAbsent(r.itemId, k -> new ArrayDeque<>()).addLast(new BuyLot(r.quantity, r.price));
+				String key = r.itemId + ":" + r.slot + ":" + r.offerId;
+				Flip f = openFlips.get(key);
+				// Fills with no offer id group by slot, and a finished flip never takes more buys.
+				if (f == null || (r.offerId == 0 && f.done()))
+				{
+					f = new Flip(r.itemId, r.slot, r.offerId);
+					openFlips.put(key, f);
+					flips.add(f);
+				}
+				f.boughtQty += r.quantity;
+				f.boughtValue += (long) r.quantity * r.price;
+				f.lastTimestamp = r.timestamp;
+				f.recovered |= r.recovered;
+				lots.computeIfAbsent(r.itemId, k -> new ArrayDeque<>()).addLast(new BuyLot(r.quantity, r.price, f));
 				p.openQty += r.quantity;
 				p.openCost += (long) r.quantity * r.price;
 				continue;
@@ -180,6 +230,12 @@ public final class SessionStats
 				int take = Math.min(remaining, lot.qty);
 				p.realized += (long) take * (netPerUnit - lot.price);
 				p.matchedQty += take;
+				Flip f = lot.flip;
+				f.realized += (long) take * (netPerUnit - lot.price);
+				f.soldQty += take;
+				f.soldValue += (long) take * r.price;
+				f.lastTimestamp = r.timestamp;
+				f.recovered |= r.recovered;
 				p.openQty -= take;
 				p.openCost -= (long) take * lot.price;
 				lot.qty -= take;
@@ -207,7 +263,7 @@ public final class SessionStats
 		{
 			total += p.realized;
 		}
-		return new Result(total, out);
+		return new Result(total, out, flips);
 	}
 
 	/** Removes the item's open lots from its position. No-op when nothing is open. */
@@ -224,6 +280,7 @@ public final class SessionStats
 			p.openQty -= lot.qty;
 			p.openCost -= (long) lot.qty * lot.price;
 			p.ignoredQty += lot.qty;
+			lot.flip.ignoredQty += lot.qty;
 		}
 		q.clear();
 	}
@@ -251,11 +308,14 @@ public final class SessionStats
 	{
 		public final long totalRealized;
 		public final List<ItemPosition> items;
+		/** Oldest buy first. Sells with no tracked buy are not flips. */
+		public final List<Flip> flips;
 
-		Result(long totalRealized, List<ItemPosition> items)
+		Result(long totalRealized, List<ItemPosition> items, List<Flip> flips)
 		{
 			this.totalRealized = totalRealized;
 			this.items = items;
+			this.flips = flips;
 		}
 	}
 

@@ -42,10 +42,19 @@ public final class GeOfferDiffer
 		public final TradeRecord.Side side;
 		public final int totalQuantity;
 		public final long price;
+		/** When this offer was first seen in the slot. Every fill of the offer carries it. 0 = unknown. */
+		public final long offerId;
 
 		public SlotState(int itemId, int quantitySold, long spent, long lastSeen,
 			TradeRecord.Side side, int totalQuantity, long price)
 		{
+			this(itemId, quantitySold, spent, lastSeen, side, totalQuantity, price, 0);
+		}
+
+		public SlotState(int itemId, int quantitySold, long spent, long lastSeen,
+			TradeRecord.Side side, int totalQuantity, long price, long offerId)
+		{
+			this.offerId = offerId;
 			this.itemId = itemId;
 			this.quantitySold = quantitySold;
 			this.spent = spent;
@@ -94,6 +103,16 @@ public final class GeOfferDiffer
 	}
 
 	/**
+	 * Whether this fill finished its offer while we watched. Each offer reaches its full
+	 * quantity on exactly one fill, so this fires once per offer. Fills recovered at login
+	 * never count.
+	 */
+	public static boolean completesLive(TradeRecord fill, OfferSnapshot next)
+	{
+		return !fill.recovered && next.quantitySold == next.totalQuantity;
+	}
+
+	/**
 	 * Folds one offer event into the baseline. Returns a fill only when the event carries
 	 * newly transacted quantity for the same ongoing offer. The first sighting of an offer
 	 * only records a baseline, which is what keeps the login replay silent.
@@ -117,8 +136,10 @@ public final class GeOfferDiffer
 		boolean sameOffer = prev != null && OfferStates.sameOffer(prev.itemId, prev.side,
 			prev.totalQuantity, prev.price, prev.quantitySold, prev.spent, next);
 
+		// The offer keeps its id while it stays in the slot. A baseline saved before ids existed gets one now.
+		long offerId = sameOffer && prev.offerId != 0 ? prev.offerId : ts;
 		baseline.put(slot, new SlotState(next.itemId, next.quantitySold, next.spent, ts,
-			nextSide, next.totalQuantity, next.price));
+			nextSide, next.totalQuantity, next.price, offerId));
 
 		if (!sameOffer)
 		{
@@ -140,7 +161,7 @@ public final class GeOfferDiffer
 		// A fill against a still-seeded baseline happened while we were not watching. Mark it
 		// recovered and bound its true time instead of letting it read as a fresh trade.
 		long offlineSince = wasSeeded ? prev.lastSeen : 0;
-		return Optional.of(new TradeRecord(
-			next.itemId, nextSide, price, qtyDelta, spentDelta, slot, ts, wasSeeded, offlineSince));
+		return Optional.of(new TradeRecord(next.itemId, nextSide, price, qtyDelta, spentDelta, slot, ts,
+			wasSeeded, offlineSince, java.util.UUID.randomUUID().toString(), offerId));
 	}
 }

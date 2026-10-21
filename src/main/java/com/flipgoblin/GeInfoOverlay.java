@@ -21,13 +21,13 @@ import net.runelite.client.ui.overlay.components.PanelComponent;
 import net.runelite.client.ui.overlay.components.TitleComponent;
 
 /**
- * Market info wrapped around the Grand Exchange window: an always-on graph below the
- * window, an opt-in second graph above it (both timeframes configurable), and an info
+ * Market info wrapped around the Grand Exchange window: a graph below the
+ * window (on by default), an opt-in second graph above it (both timeframes configurable), and an info
  * panel to the right. While the player is setting up or viewing an offer, the panel shows
  * that item's market data: ask/bid, after-tax margin, ROI, 24h volume per side, buy limit,
  * and data age. The charts span the GE window's width, each with a readout panel at its
- * right edge, because text drawn over the lines was unreadable. Always on; there is no
- * config toggle.
+ * right edge, because text drawn over the lines was unreadable. The info panel is always
+ * on; each graph has its own toggle.
  *
  * There are two triggers because the client models them differently: composing an offer
  * sets the TRADINGPOST_SEARCH varp (reset to -1 on confirm), while viewing a placed offer
@@ -45,6 +45,8 @@ public class GeInfoOverlay extends Overlay
 	private static final Color PROFIT = new Color(0x3f, 0xb9, 0x50);
 	private static final Color LOSS = new Color(0xf8, 0x51, 0x49);
 	private static final Color MUTED = Color.LIGHT_GRAY;
+	/** RuneLite's brand orange, for the Max buy row. */
+	private static final Color ORANGE = new Color(0xff, 0x98, 0x1f);
 	// Chart series colors: the website's exactly (apps/web/lib/candles.ts ASK_COLOR / BID_COLOR).
 	private static final Color ASK_LINE = new Color(0xe8, 0xb0, 0x4f);
 	private static final Color BID_LINE = new Color(0x38, 0xbd, 0xf8);
@@ -60,6 +62,29 @@ public class GeInfoOverlay extends Overlay
 		return new Color(0, 0, 0, a);
 	}
 
+	/** Handed to RuneLite's panels so they draw neither fill nor outline; we draw both. */
+	private static final Color NO_BG = new Color(0, 0, 0, 0);
+
+	/**
+	 * Renders a panel at the current origin with our fill and optional frame. The fill uses the
+	 * size from the panel's previous render, as RuneLite's own background does.
+	 */
+	private static Dimension renderPanel(Graphics2D g, PanelComponent pc, Color bg, boolean border)
+	{
+		Rectangle last = pc.getBounds();
+		if (last != null && last.width > 0 && last.height > 0)
+		{
+			g.setColor(bg);
+			g.fillRect(0, 0, last.width, last.height);
+		}
+		Dimension d = pc.render(g);
+		if (border && d != null)
+		{
+			PanelBorder.draw(g, 0, 0, d.width, d.height, bg);
+		}
+		return d;
+	}
+
 	private final Client client;
 	private final FlipGoblinPlugin plugin;
 	private final FlipGoblinConfig config;
@@ -71,8 +96,9 @@ public class GeInfoOverlay extends Overlay
 	private final PanelComponent botReadout = new PanelComponent();
 	private String lastGate;
 
-	/** Chart box height. */
-	private static final int CHART_H = 176;
+	/** Chart box height limits, matching the config's ranges. */
+	private static final int CHART_H_MIN = 80;
+	private static final int CHART_H_MAX = 400;
 	private static final int GAP = 6;
 	/** The price typed into a new offer. A 64-bit varp that RuneLite has not named yet. */
 	private static final int GE_SETUP_PRICE_VARP = 5753;
@@ -155,7 +181,9 @@ public class GeInfoOverlay extends Overlay
 		{
 			addMarketRows(p);
 			addFlipRows(p, itemId, setupSell || viewedSell, viewedSell, viewed, lastBuy, purchasePrice);
-			addLimitRows(p, itemId);
+			// While composing a buy, the entered price per item caps what the cash can pay for.
+			boolean setupBuy = viewed == null && !setupSell;
+			addLimitRows(p, itemId, setupBuy ? client.getVarpLongValue(GE_SETUP_PRICE_VARP) : 0);
 			addActivityRows(p, itemId, fills);
 		}
 		return layoutPanelAndCharts(graphics, b, p, itemId, purchasePrice);
@@ -278,7 +306,7 @@ public class GeInfoOverlay extends Overlay
 	}
 
 	/** The 4h buy-limit rows: bought, limit left, and the reset countdown. */
-	private void addLimitRows(PriceClient.ItemPrices p, int itemId)
+	private void addLimitRows(PriceClient.ItemPrices p, int itemId, long buyPrice)
 	{
 		// The 4h buy-limit usage seen this session. "≥" because buys before the plugin
 		// ran are invisible. Red once the known count reaches the limit.
@@ -296,13 +324,26 @@ public class GeInfoOverlay extends Overlay
 		}
 		// The useful complement: what can still be bought this window. "≤" because
 		// unseen pre-session buys can only shrink it.
+		long left = -1;
 		if (p.buyLimit != null)
 		{
-			long left = Math.max(0, p.buyLimit - (limit == null ? 0 : limit.used));
+			left = Math.max(0, p.buyLimit - (limit == null ? 0 : limit.used));
 			panel.getChildren().add(LineComponent.builder()
 				.left("Limit left")
 				.right((exact ? "" : "≤") + left)
 				.rightColor(left == 0 ? LOSS : Color.WHITE)
+				.build());
+		}
+		// What this buy offer can take: the cash at the entered price, capped by the limit left.
+		if (buyPrice > 0)
+		{
+			long max = GeLimits.maxBuy(left, plugin.cash(), buyPrice);
+			panel.getChildren().add(LineComponent.builder()
+				.left("Max buy")
+				// "?" when the bank isn't counted: the cash, and so this, may be higher.
+				.right((left >= 0 && !exact ? "≤" : "") + Gp.exact(max) + (plugin.cashHasBank() ? "" : "?"))
+				.leftColor(ORANGE)
+				.rightColor(ORANGE)
 				.build());
 		}
 		// The window's reset moment on its own row, with a Next-Update-style countdown
@@ -402,43 +443,58 @@ public class GeInfoOverlay extends Overlay
 		PriceClient.ItemPrices p, int itemId, long purchasePrice)
 	{
 		Color bg = panelBg();
-		panel.setBackgroundColor(bg);
-		topReadout.setBackgroundColor(bg);
-		botReadout.setBackgroundColor(bg);
+		boolean border = config.gePanelBorder();
+		panel.setBackgroundColor(NO_BG);
+		topReadout.setBackgroundColor(NO_BG);
+		botReadout.setBackgroundColor(NO_BG);
 		int panelWidth = Math.max(230, b.width / 2);
-		int px = Math.min(b.x + b.width + GAP, client.getCanvasWidth() - panelWidth - 4);
-		int py = b.y;
-		panel.setPreferredSize(new Dimension(panelWidth, 0));
-		graphics.translate(px, py);
-		Dimension d = panel.render(graphics);
-		graphics.translate(-px, -py);
-
-		int chartW = Math.max(460, b.width);
+		// One x for the whole right column, kept on the canvas. The graphs end just left of it.
+		int px = GeColumn.columnX(b.x, b.width, client.getCanvasWidth(), panelWidth, GAP);
+		int chartW = px - GAP - b.x;
 		net.runelite.api.Point mouse = client.getMouseCanvasPosition();
 		int top = b.y;
-		int bottom = Math.max(b.y + b.height, py + (d == null ? 0 : d.height));
+		int bottom = b.y + b.height;
 		int right = px + panelWidth;
 		FlipGoblinConfig.Timeframe topTf = config.geTopGraph();
 		FlipGoblinConfig.Timeframe botTf = config.geBottomGraph();
 		PriceClient.Series topS = !config.geShowTopGraph() || p == null
 			? null : plugin.seriesFor(itemId, topTf.interval, topTf.points);
-		PriceClient.Series botS = p == null
+		PriceClient.Series botS = !config.geShowBottomGraph() || p == null
 			? null : plugin.seriesFor(itemId, botTf.interval, botTf.points);
+
+		// Drawn top to bottom so each panel in the right column can clear the one above it.
+		int py = b.y;
 		if (topS != null && topS.ask.length >= 2)
 		{
-			int cy = Math.max(4, b.y - CHART_H - GAP);
-			drawChartAt(graphics, topS, volumeSource(topTf, topS, itemId), volArrival(topTf, itemId),
-				bg, chartW, panelWidth, b.x, cy, mouse, topTf, topReadout, itemId, purchasePrice);
+			int th = Math.max(CHART_H_MIN, Math.min(CHART_H_MAX, config.geTopGraphHeight()));
+			int cy = Math.max(4, b.y - th - GAP + config.geTopGraphOffset());
+			Dimension side = drawChartAt(graphics, topS, volumeSource(topTf, topS, itemId), volArrival(topTf, itemId),
+				bg, border, chartW, th, panelWidth, b.x, cy, 0, mouse, topTf, topReadout, itemId, purchasePrice);
 			top = Math.min(top, cy);
-			right = Math.max(right, b.x + chartW + GAP + panelWidth);
+			right = Math.max(right, px + panelWidth);
+			if (side != null)
+			{
+				py = GeColumn.infoY(py, cy + side.height, GAP);
+			}
 		}
+
+		panel.setPreferredSize(new Dimension(panelWidth, 0));
+		graphics.translate(px, py);
+		Dimension d = renderPanel(graphics, panel, bg, border);
+		graphics.translate(-px, -py);
+		int infoBottom = py + (d == null ? 0 : d.height);
+		bottom = Math.max(bottom, infoBottom);
+
 		if (botS != null && botS.ask.length >= 2)
 		{
-			int cy = b.y + b.height + GAP;
-			drawChartAt(graphics, botS, volumeSource(botTf, botS, itemId), volArrival(botTf, itemId),
-				bg, chartW, panelWidth, b.x, cy, mouse, botTf, botReadout, itemId, purchasePrice);
-			bottom = Math.max(bottom, cy + CHART_H);
-			right = Math.max(right, b.x + chartW + GAP + panelWidth);
+			int bh = Math.max(CHART_H_MIN, Math.min(CHART_H_MAX, config.geBottomGraphHeight()));
+			int cy = b.y + b.height + GAP + config.geBottomGraphOffset();
+			int sideY = GeColumn.bottomReadoutY(cy, infoBottom, GAP);
+			Dimension side = drawChartAt(graphics, botS, volumeSource(botTf, botS, itemId), volArrival(botTf, itemId),
+				bg, border, chartW, bh, panelWidth, b.x, cy, sideY - cy, mouse, botTf, botReadout, itemId,
+				purchasePrice);
+			bottom = Math.max(bottom, Math.max(cy + bh, sideY + (side == null ? 0 : side.height)));
+			right = Math.max(right, px + panelWidth);
 		}
 
 		return new Dimension(right - b.x, bottom - top);
@@ -462,16 +518,18 @@ public class GeInfoOverlay extends Overlay
 	}
 
 	/** Translates to (x, y), draws one chart box + readout panel with the mouse mapped into that space. */
-	private static void drawChartAt(Graphics2D g, PriceClient.Series s, PriceClient.Series volSrc,
-		PriceClient.VolArrival volArrival, Color bg, int width, int sideWidth, int x, int y,
-		net.runelite.api.Point mouse, FlipGoblinConfig.Timeframe tf, PanelComponent side, int itemId,
+	private static Dimension drawChartAt(Graphics2D g, PriceClient.Series s, PriceClient.Series volSrc,
+		PriceClient.VolArrival volArrival, Color bg, boolean border, int width, int height, int sideWidth, int x, int y,
+		int sideDy, net.runelite.api.Point mouse, FlipGoblinConfig.Timeframe tf, PanelComponent side, int itemId,
 		long refPrice)
 	{
 		int mx = mouse == null ? -1 : mouse.getX() - x;
 		int my = mouse == null ? -1 : mouse.getY() - y;
 		g.translate(x, y);
-		drawChart(g, s, volSrc, volArrival, bg, width, sideWidth, mx, my, tf, side, itemId, refPrice);
+		Dimension d = drawChart(g, s, volSrc, volArrival, bg, border, width, height, sideWidth, sideDy, mx, my, tf,
+			side, itemId, refPrice);
 		g.translate(-x, -y);
+		return d;
 	}
 
 	/**
@@ -622,11 +680,11 @@ public class GeInfoOverlay extends Overlay
 	 * {@code volSrc} supplies the volumes: the series itself for candle graphs, or the 5m
 	 * companion grid for the 1m graph.
 	 */
-	private static void drawChart(Graphics2D g, PriceClient.Series s, PriceClient.Series volSrc,
-		PriceClient.VolArrival volArrival, Color bg, int width, int sideWidth, int mx, int my,
-		FlipGoblinConfig.Timeframe tf, PanelComponent side, int itemId, long refPrice)
+	private static Dimension drawChart(Graphics2D g, PriceClient.Series s, PriceClient.Series volSrc,
+		PriceClient.VolArrival volArrival, Color bg, boolean border, int width, int height, int sideWidth, int sideDy,
+		int mx, int my, FlipGoblinConfig.Timeframe tf, PanelComponent side, int itemId, long refPrice)
 	{
-		final int h = CHART_H;
+		final int h = height;
 		final int pad = 3;
 		g.setColor(bg);
 		g.fillRect(0, 0, width, h);
@@ -646,7 +704,7 @@ public class GeInfoOverlay extends Overlay
 		}
 		if (!(max > min))
 		{
-			return; // flat/empty series: box only
+			return null; // flat/empty series: box only, no readout
 		}
 
 		int n = s.ask.length;
@@ -746,9 +804,15 @@ public class GeInfoOverlay extends Overlay
 			}
 		}
 
-		g.translate(width + GAP, 0);
-		side.render(g);
-		g.translate(-(width + GAP), 0);
+		if (border)
+		{
+			PanelBorder.draw(g, 0, 0, width, h, bg);
+		}
+		// The readout sits beside the graph, lower when the column needs room (GeColumn).
+		g.translate(width + GAP, sideDy);
+		Dimension d = renderPanel(g, side, bg, border);
+		g.translate(-(width + GAP), -sideDy);
+		return d;
 	}
 
 	/**

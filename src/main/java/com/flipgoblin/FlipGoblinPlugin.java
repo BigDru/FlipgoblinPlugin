@@ -11,7 +11,6 @@ import java.util.Map;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
 import lombok.extern.slf4j.Slf4j;
-import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.GrandExchangeOffer;
@@ -45,7 +44,7 @@ public class FlipGoblinPlugin extends Plugin
 {
 	// Build/version tag, visible in logs and the settings panel so support reports identify the
 	// running build. Dev jars carry b##; the publish pipeline stamps the dated release version.
-	static final String BUILD = "2026.10.07.1";
+	static final String BUILD = "2026.10.21";
 
 	/** The Flip Goblin API base URL, baked in. One constant, one server. */
 	static final String API_BASE = "https://flipgoblin-api.druex.workers.dev";
@@ -93,6 +92,21 @@ public class FlipGoblinPlugin extends Plugin
 	 * targets cycle; an unreachable check keeps the previous verdict.
 	 */
 	private volatile boolean characterLocked;
+	/** The panel's Cash figure, kept for the GE overlay's Max buy row. */
+	private volatile long latestCash;
+	/** Whether that figure includes a trusted bank. Without it the cash may be higher. */
+	private volatile boolean latestCashHasBank;
+
+	long cash()
+	{
+		return latestCash;
+	}
+
+	boolean cashHasBank()
+	{
+		return latestCashHasBank;
+	}
+
 	private static final long RECORDS_MAX_AGE_MS = 7L * 24 * 3_600_000;
 	private static final int RECORDS_MAX = 1_000;
 	private static final java.lang.reflect.Type RECORDS_TYPE =
@@ -121,8 +135,6 @@ public class FlipGoblinPlugin extends Plugin
 	private boolean hopping;
 	/** True while in a world. Every map load re-fires LOGGED_IN; while set, that is not a login. */
 	private boolean inWorld;
-	/** The bank reminder shows once per login; hops and reconnects don't repeat it. */
-	private boolean bankPromptShown;
 	private int[][] liveInventory;
 	private int[][] liveEquipment;
 
@@ -194,6 +206,8 @@ public class FlipGoblinPlugin extends Plugin
 	private CustodyOverlay custodyOverlay;
 	@Inject
 	private net.runelite.client.ui.overlay.tooltip.TooltipManager tooltipManager;
+	@Inject
+	private net.runelite.client.Notifier notifier;
 	private PriceClient prices;
 
 	// The session panel (Swing, EDT-only; updates are marshalled via invokeLater).
@@ -723,10 +737,6 @@ public class FlipGoblinPlugin extends Plugin
 			slotStates.clear(); // the next login refires every slot; those are not placements
 			pendingDrawTicks = 0;
 			pendingDrawCost = 0;
-			if (event.getGameState() == GameState.LOGIN_SCREEN)
-			{
-				bankPromptShown = false; // a real logout ends the session
-			}
 			seededThisLogin = false; // next LOGGED_IN re-seeds (possibly a different character)
 			hopping = event.getGameState() == GameState.HOPPING;
 			// Custody: stamp the clean logout instant and drop the welcome stash. The verdict
@@ -808,6 +818,7 @@ public class FlipGoblinPlugin extends Plugin
 			{
 				return;
 			}
+			loaded = GeHistoryReconcile.dropDuplicateImports(loaded);
 			records.clear();
 			records.addAll(loaded);
 			for (TradeRecord r : loaded)
@@ -982,7 +993,10 @@ public class FlipGoblinPlugin extends Plugin
 		configManager.setRSProfileConfiguration(CONFIG_GROUP, RECORDS_KEY, gson.toJson(keep));
 	}
 
-	/** Fresh login: load this character's last BANK snapshot and ask for a bank-open to refresh it. */
+	/**
+	 * Fresh login: load this character's last BANK snapshot. The custody check that follows
+	 * says whether it can be trusted, and asks for a bank open when it can't.
+	 */
 	private void onFreshLogin()
 	{
 		observedSince = Instant.now().toEpochMilli();
@@ -1003,19 +1017,6 @@ public class FlipGoblinPlugin extends Plugin
 			}
 		}
 		recomputeAssets();
-		// CONSOLE via ChatMessageManager: a raw client.addChatMessage(GAMEMESSAGE, …) here NPEs
-		// OTHER plugins' chat handlers (injected game messages re-enter every subscriber).
-		// CONSOLE is the plugin-notice type, and the manager queues onto the client thread
-		// properly.
-		if (!bankPromptShown)
-		{
-			bankPromptShown = true;
-			chatMessageManager.queue(net.runelite.client.chat.QueuedMessage.builder()
-				.type(ChatMessageType.CONSOLE)
-				.value("Flip Goblin: open your bank to refresh your asset snapshot"
-					+ (bankSnapshot == null ? "." : " (assets may have changed since your last visit)."))
-				.build());
-		}
 	}
 
 	/** The plugin's side of the custody handshake: the ledger consequences of each outcome. */
@@ -1053,6 +1054,19 @@ public class FlipGoblinPlugin extends Plugin
 				ledgerAuthoritative = true; // judged; from here the live ledger IS the truth to save
 				persistCollectLedger();
 				recomputeAssets(); // an acquitted chain changes the estimate + the sync's bankFresh flag
+			}
+
+			@Override
+			public void onCustodyEvent(String bodyJson)
+			{
+				String token = config.apiToken().trim();
+				SyncClient s = sync;
+				if (token.isEmpty() || s == null || characterLocked)
+				{
+					return;
+				}
+				// One try, no retry queue. A lost row only leaves a hole in the log.
+				executor.submit(() -> s.postCustody(API_BASE, token, bodyJson));
 			}
 		};
 	}
@@ -1226,6 +1240,7 @@ public class FlipGoblinPlugin extends Plugin
 		// bankFresh=false (no history row) until the first bank-open; the full composite still
 		// syncs either way (the site keeps its last-known bank table).
 		boolean trusted = fresh || (custody != null && custody.bankChainTrusted() && bank != null);
+		String untrustedReason = custody == null ? null : custody.untrustedReason();
 		// GE-held = working-offer escrow + the witnessed uncollected ledger (both branches).
 		long geCoins = positions.heldCoins() + collectLedger.coins();
 		int[][] uncollected = collectLedger.itemPairs();
@@ -1246,6 +1261,14 @@ public class FlipGoblinPlugin extends Plugin
 				liveEquipment,
 				positions.heldItemPairs(),
 				uncollected);
+		// Cash on hand: coins and platinum in the counted bank, inventory and equipment. Nothing
+		// held by the GE counts, not even uncollected coins: this is what a new offer can spend.
+		latestCashHasBank = trusted && bank != null;
+		long cash = latestCash = AssetSnapshot.of(
+			Instant.now().toEpochMilli(),
+			trusted && bank != null ? bank.pairs() : null,
+			liveInventory,
+			liveEquipment).coins();
 		long bankTs = bank == null ? 0 : bank.timestamp;
 		// Dashboard-parity total: value the composite against the bulk bid map when we have one;
 		// -1 = unknown (unlinked, or the first fetch hasn't landed). The refresh is TTL-guarded
@@ -1274,7 +1297,7 @@ public class FlipGoblinPlugin extends Plugin
 		SwingUtilities.invokeLater(() ->
 		{
 			target.setOtherCharacters(others);
-			target.updateAssets(estimated, bankTs, fresh, trusted, estTotal, unpriced);
+			target.updateAssets(estimated, bankTs, fresh, trusted, untrustedReason, estTotal, unpriced, cash);
 		});
 		maybeSyncAssets(composite, bankTs, trusted, positions.active());
 	}
@@ -1406,6 +1429,10 @@ public class FlipGoblinPlugin extends Plugin
 				}
 				records.add(r);
 				saveRecords(); // fills survive restarts (cross-session cost basis)
+				if (GeOfferDiffer.completesLive(r, snapshot))
+				{
+					notifyOfferComplete(r, snapshot);
+				}
 				if (r.recovered)
 				{
 					// Offline fills count in the uncollected ledger only under ACQUITTED (a stealth
@@ -1449,6 +1476,16 @@ public class FlipGoblinPlugin extends Plugin
 		// Every event moves the baseline (fills AND first-sightings/clears); mirror it to the profile so
 		// the next login recovers offline fills from exactly what this session last saw.
 		configManager.setRSProfileConfiguration(CONFIG_GROUP, BASELINE_KEY, gson.toJson(differ.snapshotBaseline()));
+	}
+
+	/** Tells the player a buy or sell offer just finished, so they can act on it while alt-tabbed. */
+	private void notifyOfferComplete(TradeRecord r, OfferSnapshot offer)
+	{
+		String name = itemNames.getOrDefault(r.itemId, "item " + r.itemId);
+		String verb = r.side == TradeRecord.Side.BUY ? "Bought" : "Sold";
+		notifier.notify(config.offerCompleteNotification(),
+			"GE: " + verb + " " + Gp.exact(offer.totalQuantity) + " x " + name
+				+ " for " + Gp.exact(offer.spent) + " gp");
 	}
 
 	// --- overlay reads (client thread only, same thread as all mutation, so no sync needed) -------------
@@ -1711,7 +1748,7 @@ public class FlipGoblinPlugin extends Plugin
 			}
 			TradeRecord r = e.getKey();
 			recs.set(idx, new TradeRecord(r.itemId, r.side, r.price, r.quantity, r.spent,
-				r.slot, e.getValue(), true, r.offlineSince, r.clientId));
+				r.slot, e.getValue(), true, r.offlineSince, r.clientId, r.offerId));
 			applied++;
 		}
 		if (applied == 0)

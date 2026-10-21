@@ -48,6 +48,11 @@ While a token is set, the plugin exchanges:
 - **Asset snapshots:** the latest bank/inventory/GE-held (item id, quantity) pairs plus
   coins, to the user's own account for the dashboard's net-worth view. The server keeps an
   hourly value history; deleting the account deletes it along with everything else.
+- **Bank-trust log:** at each login, plugin start and first bank open, whether the plugin
+  still trusts its saved copy of the bank: the custody result (acquitted, convicted or
+  ambiguous), how long ago the game and the plugin each say the last session ended, and the
+  plugin build. The welcome screen text itself is never sent. It goes to the user's own
+  account so gaps in the net-worth history can be explained.
 - **Targets read:** the user's own watchlist and alert thresholds, read-only, shown beside
   live prices.
 - **Character name:** the current character's display name, as a cosmetic label so the

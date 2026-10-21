@@ -1,10 +1,12 @@
 package com.flipgoblin;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.Test;
 
@@ -118,5 +120,62 @@ public class GeHistoryReconcileTest
 		assertEquals(2, runs.size());
 		assertEquals(50, runs.get(0)[0]); // newest run: slot 2
 		assertEquals(300, runs.get(1)[0]); // older run: slot 1, uninterrupted by item 444
+	}
+
+	private static TradeRecord fill(TradeRecord.Side side, long price, int qty, long offerId, long ts)
+	{
+		return new TradeRecord(561, side, price, qty, price * qty, 0, ts, false, 0, "f" + ts, offerId);
+	}
+
+	/**
+	 * Live 2026-10-21 (FlipMaster I, nature runes): five buy offers in a row on slot 0, each sold
+	 * between them. Merged by slot they averaged about 129 gp, so the History row "Bought 2,257
+	 * for 127 each" matched no run and imported a second time. With offer ids each offer is its
+	 * own run, and the row is covered.
+	 */
+	@Test
+	public void backToBackOffersInOneSlotAreSeparateRuns()
+	{
+		List<TradeRecord> recs = Arrays.asList(
+			fill(TradeRecord.Side.BUY, 131, 2058, 1, 1),
+			fill(TradeRecord.Side.SELL, 135, 2058, 2, 2),
+			fill(TradeRecord.Side.BUY, 129, 2122, 3, 3),
+			fill(TradeRecord.Side.SELL, 135, 2122, 4, 4),
+			fill(TradeRecord.Side.BUY, 128, 2205, 5, 5),
+			fill(TradeRecord.Side.SELL, 132, 2205, 6, 6),
+			fill(TradeRecord.Side.BUY, 127, 80, 7, 7),
+			fill(TradeRecord.Side.BUY, 127, 2177, 7, 8),
+			fill(TradeRecord.Side.SELL, 133, 2257, 9, 9),
+			fill(TradeRecord.Side.BUY, 129, 2292, 10, 10));
+		assertNull(GeHistoryReconcile.importFor(recs, 561, TradeRecord.Side.BUY, 2257, 2257L * 127, 11));
+		// The offer before it is covered too, and an offer we never saw still imports whole.
+		assertNull(GeHistoryReconcile.importFor(recs, 561, TradeRecord.Side.BUY, 2205, 2205L * 128, 11));
+		assertNotNull(GeHistoryReconcile.importFor(recs, 561, TradeRecord.Side.BUY, 1000, 1000L * 120, 11));
+	}
+
+	@Test
+	public void loadDropsAnImportThatDuplicatesATrackedOffer()
+	{
+		TradeRecord dup = new TradeRecord(561, TradeRecord.Side.BUY, 127, 2257, 2257L * 127, -1, 20, true, 0);
+		List<TradeRecord> recs = Arrays.asList(
+			fill(TradeRecord.Side.BUY, 127, 80, 7, 7),
+			fill(TradeRecord.Side.BUY, 127, 2177, 7, 8),
+			fill(TradeRecord.Side.SELL, 133, 2257, 9, 9),
+			dup);
+		List<TradeRecord> out = GeHistoryReconcile.dropDuplicateImports(recs);
+		assertEquals(3, out.size());
+		assertTrue(!out.contains(dup));
+	}
+
+	@Test
+	public void loadKeepsGapImportsAndUntrackedOffers()
+	{
+		// 747 of a 1000-bar offer seen live, the 253 gap imported: the gap is real.
+		TradeRecord gap = new TradeRecord(2359, TradeRecord.Side.BUY, 944, 253, 253L * 944, -1, 20, true, 0);
+		TradeRecord live = new TradeRecord(2359, TradeRecord.Side.BUY, 944, 747, 747L * 944, 0, 5, false, 0, "a", 3);
+		// An offer from before the plugin ran: nothing tracked matches it.
+		TradeRecord old = new TradeRecord(561, TradeRecord.Side.BUY, 120, 1000, 120_000, -1, 21, true, 0);
+		List<TradeRecord> recs = Arrays.asList(live, gap, old);
+		assertEquals(recs, GeHistoryReconcile.dropDuplicateImports(recs));
 	}
 }
