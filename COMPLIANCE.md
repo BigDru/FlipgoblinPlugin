@@ -51,7 +51,8 @@ While a token is set, the plugin exchanges:
 - **Bank-trust log:** at each login, plugin start and first bank open, whether the plugin
   still trusts its saved copy of the bank: the custody result (acquitted, convicted or
   ambiguous), how long ago the game and the plugin each say the last session ended, and the
-  plugin build. The welcome screen text itself is never sent. It goes to the user's own
+  plugin build. A login where the game skips the welcome screen is logged the same way, with
+  no custody result. The welcome screen text itself is never sent. It goes to the user's own
   account so gaps in the net-worth history can be explained.
 - **Targets read:** the user's own watchlist and alert thresholds, read-only, shown beside
   live prices.

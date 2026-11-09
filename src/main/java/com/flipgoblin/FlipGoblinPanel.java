@@ -108,6 +108,7 @@ public final class FlipGoblinPanel extends PluginPanel
 			return tipLocation(this, e);
 		}
 	};
+	private final JCheckBox versionPanelBox = new TipCheckBox("Show top-left panel");
 	private final JCheckBox invHoverBox = new TipCheckBox("Inventory hover tooltip");
 	private final JCheckBox topGraphBox = new TipCheckBox("Show top GE graph");
 	private final JCheckBox bottomGraphBox = new TipCheckBox("Show bottom GE graph");
@@ -156,6 +157,9 @@ public final class FlipGoblinPanel extends PluginPanel
 	private IntConsumer onUndoIgnore = itemId -> {};
 	private List<GePositions.Position> positions = Collections.emptyList();
 	private final Map<Integer, String> names = new HashMap<>();
+
+	/** The "What's new" box above the tabs. Hidden until the plugin calls showWhatsNew. */
+	private final JPanel whatsNew = buildWhatsNew();
 
 	public FlipGoblinPanel(ItemManager itemManager, ConfigManager configManager, FlipGoblinConfig config)
 	{
@@ -211,11 +215,11 @@ public final class FlipGoblinPanel extends PluginPanel
 		listDisplay.setOpaque(false);
 		listTabs = new MaterialTabGroup(listDisplay);
 		listTabs.setBorder(new EmptyBorder(4, 0, 6, 0));
-		MaterialTab itemsTab = new MaterialTab("Items", listTabs, itemsList);
-		listTabs.addTab(itemsTab);
-		listTabs.addTab(new MaterialTab("Flips", listTabs, flipsList));
+		MaterialTab flipsTab = new MaterialTab("Flips", listTabs, flipsList);
+		listTabs.addTab(flipsTab);
+		listTabs.addTab(new MaterialTab("Items", listTabs, itemsList));
 		listTabs.addTab(new MaterialTab("Fills", listTabs, fillsList));
-		listTabs.select(itemsTab);
+		listTabs.select(flipsTab);
 		JPanel lists = new JPanel(new BorderLayout());
 		lists.setOpaque(false);
 		lists.add(listTabs, BorderLayout.NORTH);
@@ -266,7 +270,12 @@ public final class FlipGoblinPanel extends PluginPanel
 		tabGroup.addTab(sessionTab);
 		tabGroup.addTab(settingsTab);
 		tabGroup.select(sessionTab);
-		add(tabGroup, BorderLayout.NORTH);
+		JPanel top = new JPanel(new BorderLayout(0, 8));
+		top.setOpaque(false);
+		whatsNew.setVisible(false);
+		top.add(whatsNew, BorderLayout.NORTH);
+		top.add(tabGroup, BorderLayout.CENTER);
+		add(top, BorderLayout.NORTH);
 		add(display, BorderLayout.CENTER);
 
 		// The easy report channel: one click to the site's feedback form. Works logged out.
@@ -290,6 +299,53 @@ public final class FlipGoblinPanel extends PluginPanel
 
 		refreshSettings();
 		render();
+	}
+
+	/** Shows the "What's new" box. */
+	void showWhatsNew()
+	{
+		whatsNew.setVisible(true);
+		revalidate();
+	}
+
+	private JPanel buildWhatsNew()
+	{
+		JPanel box = card();
+		JLabel title = new JLabel("What's new");
+		title.setFont(FontManager.getRunescapeBoldFont());
+		title.setForeground(WORKING);
+		JLabel close = new TipLabel("x");
+		close.setFont(FontManager.getRunescapeBoldFont());
+		close.setForeground(MUTED);
+		close.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+		close.setToolTipText(tip("Close until the next update"));
+		close.addMouseListener(new MouseAdapter()
+		{
+			@Override
+			public void mouseClicked(MouseEvent e)
+			{
+				// Closing marks these notes as seen.
+				configManager.setConfiguration(FlipGoblinPlugin.CONFIG_GROUP, WhatsNew.SEEN_KEY, WhatsNew.ID);
+				box.setVisible(false);
+				revalidate();
+			}
+		});
+		JPanel head = new JPanel(new BorderLayout());
+		head.setOpaque(false);
+		head.add(title, BorderLayout.WEST);
+		head.add(close, BorderLayout.EAST);
+		box.add(head);
+		StringBuilder html = new StringBuilder("<html><div style='width:150px'>");
+		for (String note : WhatsNew.NOTES)
+		{
+			html.append("&bull; ").append(note).append("<br>");
+		}
+		JLabel notes = new JLabel(html.append("</div></html>").toString());
+		notes.setFont(FontManager.getRunescapeSmallFont());
+		notes.setForeground(MUTED);
+		notes.setBorder(new EmptyBorder(4, 0, 0, 0));
+		box.add(notes);
+		return box;
 	}
 
 	/**
@@ -367,6 +423,8 @@ public final class FlipGoblinPanel extends PluginPanel
 		charactersCard.add(charactersRows);
 
 		JPanel displayCard = card();
+		versionPanelBox.setToolTipText(tip("The Flip Goblin panel in the top left of the game, and the custody box on the welcome screen"));
+		displayCard.add(checkboxRow(versionPanelBox, "showVersionPanel"));
 		invHoverBox.setToolTipText(tip("Market tooltip when hovering inventory items outside the GE"));
 		displayCard.add(checkboxRow(invHoverBox, "inventoryHover"));
 		// Each graph's timeframe picker sits right under its own toggle.
@@ -494,6 +552,7 @@ public final class FlipGoblinPanel extends PluginPanel
 			{
 				scopeCombo.setSelectedIndex(scopeIdx);
 			}
+			versionPanelBox.setSelected(config.showVersionPanel());
 			invHoverBox.setSelected(config.inventoryHover());
 			topGraphBox.setSelected(config.geShowTopGraph());
 			bottomGraphBox.setSelected(config.geShowBottomGraph());

@@ -15,8 +15,8 @@ import net.runelite.client.ui.overlay.components.TitleComponent;
  * RuneLite's stock overlay components (translucent dark panel, movable with Alt-drag, position
  * remembered by the overlay system).
  *
- * ALWAYS visible (no config toggle), so a fresh session is verifiable at a glance; the
- * positions rows appear only when they exist. Reads plugin state on the client thread.
+ * Visible by default and can be turned off in Settings. The positions rows appear only when
+ * they exist. Reads plugin state on the client thread.
  */
 public class FlipGoblinOverlay extends OverlayPanel
 {
@@ -38,6 +38,10 @@ public class FlipGoblinOverlay extends OverlayPanel
 	@Override
 	public Dimension render(Graphics2D graphics)
 	{
+		if (!plugin.showVersionPanel())
+		{
+			return null;
+		}
 		List<GePositions.Position> active = plugin.overlayPositions();
 		long realized = plugin.overlayRealized();
 

@@ -80,6 +80,18 @@ public interface FlipGoblinConfig extends Config
 		return true;
 	}
 
+	@ConfigItem(
+		position = 3,
+		keyName = "showVersionPanel",
+		name = "Top-left panel",
+		description = "The Flip Goblin panel in the top left of the game, with your P/L and active offers.",
+		hidden = true
+	)
+	default boolean showVersionPanel()
+	{
+		return true;
+	}
+
 	/**
 	 * A graph timeframe: the display label, plus the candle interval and point count that
 	 * render it. Points × interval = the span.

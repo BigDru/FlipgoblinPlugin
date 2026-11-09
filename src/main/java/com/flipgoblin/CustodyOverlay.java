@@ -40,7 +40,8 @@ public class CustodyOverlay extends OverlayPanel
 	{
 		String detail = plugin.custodyOverlayDetail();
 		LoginCustody.Verdict verdict = plugin.custodyOverlayVerdict();
-		if (detail == null || verdict == null || !plugin.welcomeScreenVisible())
+		// Same toggle as the top-left panel. The verdict still goes to chat.
+		if (!plugin.showVersionPanel() || detail == null || verdict == null || !plugin.welcomeScreenVisible())
 		{
 			return null;
 		}

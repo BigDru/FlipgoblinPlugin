@@ -35,4 +35,17 @@ public class CustodyEventJsonTest
 		assertFalse(o.has("verdict"));
 		assertFalse(o.has("gameAgoMs"));
 	}
+
+	@Test
+	public void uncheckedLoginCarriesTheDroppedChainAndGap()
+	{
+		// POST /plugin/custody takes login_unchecked without a verdict (a login row needs one).
+		JsonObject o = new Gson().fromJson(CustodyTracker.eventJson("login_unchecked",
+			null, false, true, null, 1_560_000L, 5L), JsonObject.class);
+		assertEquals("login_unchecked", o.get("cause").getAsString());
+		assertFalse(o.has("verdict"));
+		assertFalse(o.get("trusted").getAsBoolean());
+		assertEquals(true, o.get("prevChainTrusted").getAsBoolean());
+		assertEquals(1_560_000L, o.get("ourAgoMs").getAsLong());
+	}
 }

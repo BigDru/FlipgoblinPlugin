@@ -33,6 +33,9 @@ final class CustodyTracker
 
 		/** Trust was checked at login or changed. Send this body to the server's trust log. */
 		void onCustodyEvent(String bodyJson);
+
+		/** A mid-session restart kept the saved trust. Reload what a login would have restored. */
+		void onRestartCarried();
 	}
 
 	private static final String SESSION_KEY = "sessionRecord";
@@ -65,6 +68,8 @@ final class CustodyTracker
 	 * would otherwise read as phantom skew on our side only. */
 	private long welcomeCapturedMs;
 	private boolean judged;
+	/** Ticks since a fresh login while no welcome screen has shown, or -1 when not watching. */
+	private int noWelcomeTicks = -1;
 	private boolean consoleQueued;
 	private volatile boolean welcomeVisible;
 	private volatile String detail;
@@ -103,6 +108,7 @@ final class CustodyTracker
 	boolean heartbeat(long now)
 	{
 		lastGameTickMs = now;
+		watchForWelcome(now);
 		if (now - lastHeartbeatMs < 60_000)
 		{
 			return false;
@@ -110,15 +116,81 @@ final class CustodyTracker
 		lastHeartbeatMs = now;
 		if (sessionRecord == null)
 		{
-			// Plugin enabled mid-session: login instants unknown (0). The next login judges
-			// AMBIGUOUS off this record, which is the honest floor.
-			sessionRecord = new LoginCustody.SessionRecord();
-			untrustedReason = "the plugin started while you were logged in";
+			// Plugin enabled mid-session. A quick restart (a Hub update, a toggle) keeps the
+			// saved record and its bank trust, because only a login should break trust.
+			LoginCustody.SessionRecord stored = loadSessionRecord();
+			if (carriesAcrossRestart(stored, now))
+			{
+				sessionRecord = stored;
+				bankChainTrusted = true;
+				untrustedReason = null;
+				host.onRestartCarried();
+			}
+			else
+			{
+				// Login instants unknown (0). The next login judges off this record.
+				sessionRecord = new LoginCustody.SessionRecord();
+				if (!bankChainTrusted)
+				{
+					untrustedReason = "the plugin started while you were logged in";
+				}
+			}
 			host.onCustodyEvent(eventJson("plugin_start", null, bankChainTrusted, null, null, null, now));
 		}
 		sessionRecord.lastSeenMs = now;
 		persistSessionRecord();
 		return true;
+	}
+
+	/** Ticks a fresh login waits for the welcome screen before calling the login unchecked. */
+	static final int NO_WELCOME_TICKS = 10;
+
+	/**
+	 * A fresh login whose welcome screen never shows cannot be checked, and trust stays off.
+	 * Say so in the log, the chat, and the server's trust log, so the gap is never silent.
+	 * A welcome screen that shows up later still runs the check as normal.
+	 */
+	private void watchForWelcome(long now)
+	{
+		if (noWelcomeTicks < 0 || judged)
+		{
+			return;
+		}
+		if (welcomeLoaded)
+		{
+			noWelcomeTicks = -1;
+			return;
+		}
+		if (++noWelcomeTicks < NO_WELCOME_TICKS)
+		{
+			return;
+		}
+		noWelcomeTicks = -1;
+		Boolean prevChain = prevSession == null ? null : prevSession.bankChainTrusted;
+		Long gapMs = prevSession == null || prevSession.lastSeenMs <= 0 ? null : now - prevSession.lastSeenMs;
+		untrustedReason = "the game skipped the welcome screen, so this login couldn't be checked";
+		log.warn("[{}] custody: no welcome screen after a fresh login, check skipped (prevChain={}, gap={}s)",
+			FlipGoblinPlugin.BUILD, prevChain, gapMs == null ? "?" : gapMs / 1000);
+		chatMessageManager.queue(QueuedMessage.builder()
+			.type(ChatMessageType.CONSOLE)
+			.value("Flip Goblin custody: the game skipped the welcome screen, so this login couldn't be checked. "
+				+ "<col=ff0000>Open your bank once to restore full net worth.</col>")
+			.build());
+		host.onCustodyEvent(eventJson("login_unchecked", null, false, prevChain, null, gapMs, now));
+	}
+
+	/** How old the saved record may be for a mid-session start to keep its bank trust. */
+	static final long RESTART_CARRY_MS = 5 * 60_000;
+
+	/**
+	 * True when a plugin started mid-session can keep the saved record's bank trust: the
+	 * record was trusted and was saved moments ago, so the client stayed logged in through
+	 * the restart. The heartbeat saves every minute, so a plain restart is always inside.
+	 */
+	static boolean carriesAcrossRestart(LoginCustody.SessionRecord stored, long now)
+	{
+		return stored != null && stored.bankChainTrusted && stored.lastSeenMs > 0
+			&& now >= stored.lastSeenMs && now - stored.lastSeenMs <= RESTART_CARRY_MS;
 	}
 
 	/**
@@ -160,6 +232,7 @@ final class CustodyTracker
 	{
 		if (!wasAtLoginScreen)
 		{
+			log.info("[{}] custody: reconnect, trust kept ({})", FlipGoblinPlugin.BUILD, bankChainTrusted);
 			recordLogin(false);
 			return;
 		}
@@ -174,6 +247,8 @@ final class CustodyTracker
 		untrustedReason = "the login check hasn't finished yet";
 		host.onNewCustodyWindow();
 		sessionRecord = new LoginCustody.SessionRecord();
+		noWelcomeTicks = 0;
+		log.info("[{}] custody: fresh login, check pending", FlipGoblinPlugin.BUILD);
 		recordLogin(true);
 		maybeJudge();
 	}
@@ -285,6 +360,7 @@ final class CustodyTracker
 			return;
 		}
 		judged = true;
+		noWelcomeTicks = -1;
 		long now = Instant.now().toEpochMilli();
 		// Anchor at text-capture time, never judge time: the "…ago" string froze when the
 		// screen rendered (see welcomeCapturedMs).
@@ -369,11 +445,13 @@ final class CustodyTracker
 			: verdict == LoginCustody.Verdict.CONVICTED
 				? "someone was online after our last session (another client or mobile?)"
 				: "can't prove the last session was ours";
+		// The call to action is red so it stands out. Chat has no bold.
+		String openBank = "<col=ff0000>Open your bank once to restore full net worth.</col>";
 		String gate = bankChainTrusted
 			? "Bank snapshot trusted; full net worth restored."
 			: verdict == LoginCustody.Verdict.ACQUITTED
-				? "Bank photo predates an unverified gap. Open your bank once to restore full net worth."
-				: "Open your bank for full net worth.";
+				? "Your bank copy was already untrusted when your last session ended. " + openBank
+				: openBank;
 		chatMessageManager.queue(QueuedMessage.builder()
 			.type(ChatMessageType.CONSOLE)
 			.value("Flip Goblin custody: " + detail + ": " + verdict + " (" + meaning + "). " + gate)

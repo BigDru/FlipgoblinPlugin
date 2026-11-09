@@ -44,7 +44,7 @@ public class FlipGoblinPlugin extends Plugin
 {
 	// Build/version tag, visible in logs and the settings panel so support reports identify the
 	// running build. Dev jars carry b##; the publish pipeline stamps the dated release version.
-	static final String BUILD = "2026.10.21";
+	static final String BUILD = "2026.11.08";
 
 	/** The Flip Goblin API base URL, baked in. One constant, one server. */
 	static final String API_BASE = "https://flipgoblin-api.druex.workers.dev";
@@ -68,7 +68,7 @@ public class FlipGoblinPlugin extends Plugin
 	static final String CONFIG_GROUP = "flipgoblin";
 	private static final String BASELINE_KEY = "slotBaselines";
 	/** Persisted fill history (per character): cross-session cost basis, capped by age and count. */
-	private static final String RECORDS_KEY = "tradeRecords";
+	static final String RECORDS_KEY = "tradeRecords";
 	// Fills not yet accepted by the server, per character (see PendingTrades).
 	private static final String PENDING_KEY = "unsentTrades";
 	/** Saved Ignore events (per character), trimmed like the records. */
@@ -129,7 +129,7 @@ public class FlipGoblinPlugin extends Plugin
 	private Client client;
 	@Inject
 	private net.runelite.client.chat.ChatMessageManager chatMessageManager;
-	private static final String ASSETS_KEY = "assetSnapshot";
+	static final String ASSETS_KEY = "assetSnapshot";
 	private AssetSnapshot bankSnapshot;
 	private boolean bankFreshThisSession;
 	private boolean hopping;
@@ -172,6 +172,8 @@ public class FlipGoblinPlugin extends Plugin
 	 * mid-session never judges, and there the heartbeat save is the staleness guard.
 	 */
 	private boolean ledgerAuthoritative = true;
+	/** The last game state written to client.log, so repeats and map loads stay out. */
+	private GameState lastLoggedState;
 	/** The main GE interface. The offer-detail view renders INSIDE it as dynamic children. */
 	private static final int GE_GROUP = 465;
 	private boolean geOpen;
@@ -256,6 +258,7 @@ public class FlipGoblinPlugin extends Plugin
 		overlayManager.add(custodyOverlay);
 		panel = new FlipGoblinPanel(itemManager, configManager, config);
 		panel.setIgnoreHandlers(this::ignoreItem, this::undoIgnore);
+		showWhatsNewIfDue();
 		navButton = NavigationButton.builder()
 			.tooltip("Flip Goblin")
 			.icon(navIcon())
@@ -631,6 +634,21 @@ public class FlipGoblinPlugin extends Plugin
 		}
 	}
 
+	/** Shows the "What's new" box once per set of notes. A fresh install just records them as seen. */
+	private void showWhatsNewIfDue()
+	{
+		String seen = configManager.getConfiguration(CONFIG_GROUP, WhatsNew.SEEN_KEY);
+		boolean neverSeen = seen == null || seen.isEmpty();
+		if (WhatsNew.shouldShow(seen, neverSeen && WhatsNew.usedBefore(configManager)))
+		{
+			panel.showWhatsNew();
+		}
+		else if (neverSeen)
+		{
+			configManager.setConfiguration(CONFIG_GROUP, WhatsNew.SEEN_KEY, WhatsNew.ID);
+		}
+	}
+
 	/**
 	 * Re-parse the OTHER linked characters' local stores (7d fill history + bank photo) for the
 	 * panel's "All characters" scope. Cheap (a few small JSON strings), but only re-run when the
@@ -709,6 +727,14 @@ public class FlipGoblinPlugin extends Plugin
 	@Subscribe
 	public void onGameStateChanged(GameStateChanged event)
 	{
+		// Logged so a login's path (login screen, reconnect, hop) can be read from client.log.
+		// Map loads are skipped: they flip LOADING and LOGGED_IN on every teleport.
+		GameState state = event.getGameState();
+		if (state != GameState.LOADING && state != lastLoggedState)
+		{
+			log.info("[{}] game state: {} -> {}", BUILD, lastLoggedState, state);
+			lastLoggedState = state;
+		}
 		if (event.getGameState() == GameState.LOGGED_IN)
 		{
 			if (inWorld)
@@ -1004,6 +1030,13 @@ public class FlipGoblinPlugin extends Plugin
 		bankSnapshot = null;
 		custody.onLogin();
 		loadRecords();
+		loadBankSnapshot();
+		recomputeAssets();
+	}
+
+	/** Loads this character's saved bank copy. Custody decides whether it counts. */
+	private void loadBankSnapshot()
+	{
 		String json = configManager.getRSProfileConfiguration(CONFIG_GROUP, ASSETS_KEY);
 		if (json != null && !json.isEmpty())
 		{
@@ -1016,7 +1049,6 @@ public class FlipGoblinPlugin extends Plugin
 				log.warn("corrupt asset snapshot in profile, ignoring", e);
 			}
 		}
-		recomputeAssets();
 	}
 
 	/** The plugin's side of the custody handshake: the ledger consequences of each outcome. */
@@ -1057,6 +1089,19 @@ public class FlipGoblinPlugin extends Plugin
 			}
 
 			@Override
+			public void onRestartCarried()
+			{
+				// Same payoff as an acquitted login: the saved bank and uncollected entries
+				// count again. Runs before the heartbeat's ledger save, so the store survives.
+				if (bankSnapshot == null)
+				{
+					loadBankSnapshot();
+				}
+				collectLedger.seedEntries(loadCollectLedger());
+				recomputeAssets();
+			}
+
+			@Override
 			public void onCustodyEvent(String bodyJson)
 			{
 				String token = config.apiToken().trim();
@@ -1086,6 +1131,12 @@ public class FlipGoblinPlugin extends Plugin
 	boolean welcomeScreenVisible()
 	{
 		return custody != null && custody.welcomeScreenVisible();
+	}
+
+	/** True when the user wants the top-left panel. */
+	boolean showVersionPanel()
+	{
+		return config.showVersionPanel();
 	}
 
 	/** True while the main overlay should carry the custody banner (first minute in-world). */
